@@ -264,6 +264,7 @@ async def main():
 
     vector_memory.index_conversations()
     vector_memory.index_film_library()
+    vector_memory.index_music_library()
     vector_memory.index_photo_library()
 
     # ── 终端会话 ──────────────────────────
