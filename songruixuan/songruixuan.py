@@ -351,27 +351,34 @@ async def main():
             spin_thread = threading.Thread(target=_spin, daemon=True)
             spin_thread.start()
 
-            if not any(w in user_input for w in continue_words):
-                # 语义搜索相关记忆，注入上下文
-                memories = vector_memory.search_all(user_input, n=5)
-                if memories:
-                    parts = ["## 🧠 相关记忆（优先最近）", ""]
-                    for m in memories:
-                        source = m.get("source", "")
-                        # 从文件名提取日期，如 2026-06-09_0000_会话.md
-                        date_str = source[-22:-6] if len(source) > 20 else ""
-                        date_tag = f" [{date_str[:10]}]" if date_str else ""
-                        parts.append(f"- {m['preview']}{date_tag}")
-                    memory_context = "\n".join(parts)
-                    user_input = f"{memory_context}\n\n---\n\n{user_input}"
-                result = await agent.run(user_input)
-            else:
-                result = await agent.run()
+            try:
+                if not any(w in user_input for w in continue_words):
+                    # 语义搜索相关记忆，注入上下文
+                    memories = vector_memory.search_all(user_input, n=5)
+                    if memories:
+                        parts = ["## 🧠 相关记忆（优先最近）", ""]
+                        for m in memories:
+                            source = m.get("source", "")
+                            # 从文件名提取日期，如 2026-06-09_0000_会话.md
+                            date_str = source[-22:-6] if len(source) > 20 else ""
+                            date_tag = f" [{date_str[:10]}]" if date_str else ""
+                            parts.append(f"- {m['preview']}{date_tag}")
+                        memory_context = "\n".join(parts)
+                        user_input = f"{memory_context}\n\n---\n\n{user_input}"
+                    result = await agent.run(user_input)
+                else:
+                    result = await agent.run()
 
-            spinner_stop.set()
-            spin_thread.join(timeout=0.3)
-            print(f"{result}")
-            print(f"\n{DIM}{LEAF}{'─' * 40}{RESET}\n")
+                spinner_stop.set()
+                spin_thread.join(timeout=0.3)
+                print(f"{result}")
+                print(f"\n{DIM}{LEAF}{'─' * 40}{RESET}\n")
+
+            except KeyboardInterrupt:
+                spinner_stop.set()
+                spin_thread.join(timeout=0.3)
+                print(f"\n{YELLOW}⏎ 已中断。{RESET}\n")
+                continue
 
         except KeyboardInterrupt:
             await save_session_summary(agent)

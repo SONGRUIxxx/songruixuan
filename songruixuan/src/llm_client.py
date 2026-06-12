@@ -51,9 +51,12 @@ class LLMClient:
             elif msg.role == "user":
                 api_msgs.append({"role": "user", "content": msg.content})
             elif msg.role == "assistant":
+                content = msg.content.strip() if isinstance(msg.content, str) else msg.content
+                if not content and not msg.tool_calls:
+                    continue  # 跳过 LLM 返回的空消息，避免 DeepSeek 400 错误
                 m: dict[str, Any] = {"role": "assistant"}
-                if msg.content:
-                    m["content"] = msg.content
+                if content:
+                    m["content"] = content
                 if msg.tool_calls:
                     m["tool_calls"] = [
                         {
