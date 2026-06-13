@@ -1,7 +1,5 @@
-"""🌸 SONGRUIXUAN Agent 执行循环
-
-参考 Mini-Agent (MIT License) 的架构模式，
-重写为多模型协作的 Supervisor-Worker 架构。
+"""
+🌸 SONGRUIXUAN Agent 执行循环
 """
 
 import asyncio
