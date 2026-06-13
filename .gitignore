@@ -15,3 +15,6 @@ output/
 
 # ChromaDB (auto-generated, Phase 3)
 memory/chroma/
+
+# Local scratchpad
+Create/

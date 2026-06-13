@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import httpx
-
 from src.tool_base import Tool, ToolResult
 
 
@@ -209,58 +207,6 @@ class DeleteTool(Tool):
         if not path.is_absolute():
             path = self.workspace / file_path
         return path
-
-
-class DownloadTool(Tool):
-    """下载文件 — 从 URL 保存到本地"""
-
-    @property
-    def name(self) -> str:
-        return "download"
-
-    @property
-    def description(self) -> str:
-        return "从 URL 下载文件保存到本地。用于下载生成的音乐、图片等。"
-
-    @property
-    def parameters(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "下载链接",
-                },
-                "save_path": {
-                    "type": "string",
-                    "description": "保存路径，如 output/song.mp3",
-                },
-            },
-            "required": ["url", "save_path"],
-        }
-
-    def __init__(self, workspace_dir: str):
-        self.workspace = Path(workspace_dir)
-
-    async def execute(self, url: str, save_path: str) -> ToolResult:
-        path = Path(save_path)
-        if not path.is_absolute():
-            path = self.workspace / save_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                path.write_bytes(resp.content)
-
-            size_kb = round(len(resp.content) / 1024, 1)
-            return ToolResult(
-                success=True,
-                content=f"✅ 已下载: {path} ({size_kb} KB)",
-            )
-        except Exception as e:
-            return ToolResult(success=False, error=f"下载失败: {e}")
 
 
 class ListDirTool(Tool):

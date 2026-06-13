@@ -24,6 +24,7 @@ from src.tools.bash_tool import BashTool
 from src.tools.memory_tool import ReadMemoryTool, RecallContextTool, SaveMemoryTool
 from src.tools.vector_memory import VectorMemory
 from src.tools.film_library import FilmCreateTool, FilmAnalyzeTool, FilmImportTool
+from src.tools.music_tools import MusicImportTool
 from src.tools.photo_tools import PhotoImportTool
 from src.tools.search_tool import ImageSearchTool, WebSearchTool
 from src.tools.web_tools import WebFetchTool
@@ -118,6 +119,7 @@ def build_system_prompt() -> str:
 用户说「深度分析某电影」时，调用 film_analyze 读取「深度解析」下用户已粘贴的影评原文，将其糅合成完整分析。如果「深度解析」下已有糅合好的分析，不要再动。
 用户说「导入镜头」时，调用 film_import。
 用户说「导入照片」「处理照片」「整理照片」「处理我的照片」「生成索引」时，调用 photo_import。
+用户说「导入音乐」「导入专辑」「导入封面」「整理乐库」时，调用 music_import。
 不要自己写脚本替代已有工具——工具已实现完整功能，直接调用即可。"""
 
 
@@ -250,6 +252,11 @@ async def main():
             FilmAnalyzeTool(film_library_dir=FILM_DAILY_DIR),
             FilmImportTool(
                 film_library_dir=FILM_DAILY_DIR,
+                vector_memory=vector_memory,
+                vision_tool=vision_tool,
+            ),
+            MusicImportTool(
+                music_dir=MUSIC_WEEKLY_DIR,
                 vector_memory=vector_memory,
                 vision_tool=vision_tool,
             ),
