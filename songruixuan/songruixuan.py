@@ -323,6 +323,7 @@ async def main():
                           "/exit", "/quit", "/q"]
             lower = user_input.lower()
             if len(user_input) < 15 and any(w in lower for w in exit_words):
+                print(f"\n{DIM}💾 正在保存会话 & 更新索引...{RESET}", end=" ", flush=True)
                 await save_session_summary(agent, vector_memory)
                 print(f"\n{GREEN}🌸 再见，另一个菘蕊萱。{RESET}\n")
                 break
@@ -360,7 +361,9 @@ async def main():
 
             # 手动保存
             if user_input in ["保存一下", "存一下", "/save"]:
+                print(f"{DIM}💾 正在保存会话 & 更新索引...{RESET}", end=" ", flush=True)
                 await save_session_summary(agent, vector_memory)
+                print(f"{GREEN}✅ 已保存{RESET}\n")
                 continue
 
             # 执行（带加载动画）
@@ -410,6 +413,7 @@ async def main():
                 continue
 
         except KeyboardInterrupt:
+            print(f"\n{DIM}💾 正在保存会话 & 更新索引...{RESET}", end=" ", flush=True)
             await save_session_summary(agent, vector_memory)
             print(f"\n\n{GREEN}🌸 再见，菘蕊萱。{RESET}\n")
             break
