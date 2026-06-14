@@ -2,7 +2,9 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
+
+import yaml as _yaml
 
 from src.tool_base import Tool, ToolResult
 
@@ -11,9 +13,9 @@ if TYPE_CHECKING:
 
 
 class SaveMemoryTool(Tool):
-    """保存记忆 — 将重要信息持久化到 memory/conversations/，并自动索引到 ChromaDB"""
+    """保存记忆 — 索引到 ChromaDB，下次对话可语义搜索"""
 
-    def __init__(self, memory_dir: str, vector_memory: Optional["VectorMemory"] = None):
+    def __init__(self, memory_dir: str, vector_memory: "VectorMemory" = None):
         self.memory_dir = Path(memory_dir)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.vector_memory = vector_memory
@@ -25,7 +27,7 @@ class SaveMemoryTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "将重要信息保存到记忆库，下次对话可以读取。"
+            "将重要信息保存到记忆库，下次对话可以语义搜索到。"
             "用于保存创作决策、偏好、灵感、待办事项等。"
         )
 
@@ -34,30 +36,14 @@ class SaveMemoryTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "记忆标题（简洁描述内容）",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "要保存的完整内容",
-                },
-                "tags": {
-                    "type": "string",
-                    "description": "逗号分隔的标签，如：旁白,成都老街,抒情",
-                },
+                "title": {"type": "string", "description": "记忆标题"},
+                "content": {"type": "string", "description": "要保存的完整内容"},
+                "tags": {"type": "string", "description": "逗号分隔的标签"},
             },
             "required": ["title", "content"],
         }
 
-    async def execute(
-        self, title: str, content: str, tags: str = ""
-    ) -> ToolResult:
-        date_str = datetime.now().strftime("%Y-%m-%d_%H%M")
-        safe_title = "".join(c for c in title if c.isalnum() or c in "_- ")
-        safe_title = safe_title.strip()[:50]
-        filename = f"{date_str}_{safe_title}.md"
-
+    async def execute(self, title: str, content: str, tags: str = "") -> ToolResult:
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
         tag_line = " ".join(f"`#{t}`" for t in tag_list) if tag_list else ""
 
@@ -67,27 +53,14 @@ class SaveMemoryTool(Tool):
         full_content += f"*保存于 {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n"
         full_content += content
 
-        # 追加到 journal.md
-        journal = self.memory_dir / "journal.md"
-        journal.parent.mkdir(parents=True, exist_ok=True)
-        with open(journal, "a", encoding="utf-8") as f:
-            if journal.stat().st_size > 0:
-                f.write(f"\n\n---\n\n{full_content}")
-            else:
-                f.write(full_content)
-
-        # 如果向量记忆可用，自动索引到 ChromaDB
         if self.vector_memory:
             self.vector_memory.add_memory(title, full_content)
 
-        return ToolResult(
-            success=True,
-            content=f"✅ 已保存到对话日记: {title}",
-        )
+        return ToolResult(success=True, content=f"✅ 已保存: {title}")
 
 
 class ReadMemoryTool(Tool):
-    """读取记忆 — 查看之前的记忆内容"""
+    """读取记忆 — 查看 conversations.yaml 中的对话记录"""
 
     @property
     def name(self) -> str:
@@ -96,7 +69,7 @@ class ReadMemoryTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "读取记忆库中的文件列表或指定记忆内容。"
+            "读取记忆库中的对话列表或搜索指定内容。"
             "用于回顾之前的创作决策、偏好和灵感。"
         )
 
@@ -107,10 +80,7 @@ class ReadMemoryTool(Tool):
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": (
-                        "留空则列出所有记忆文件，"
-                        "填入关键词则搜索并读取匹配的记忆"
-                    ),
+                    "description": "留空则列出所有对话，填入关键词则搜索匹配的对话",
                 },
             },
             "required": [],
@@ -120,57 +90,45 @@ class ReadMemoryTool(Tool):
         self.memory_dir = Path(memory_dir)
 
     async def execute(self, query: str = "") -> ToolResult:
-        if not self.memory_dir.exists():
-            return ToolResult(
-                success=True,
-                content="📭 记忆库为空。",
-            )
+        yaml_path = self.memory_dir / "conversations.yaml"
+        if not yaml_path.exists():
+            return ToolResult(success=True, content="📭 记忆库为空。")
 
-        files = sorted(
-            self.memory_dir.glob("*.md"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True,
-        )
+        try:
+            data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return ToolResult(success=True, content="📭 记忆库为空。")
 
-        if not files:
-            return ToolResult(
-                success=True,
-                content="📭 记忆库为空。",
-            )
+        sessions = data.get("sessions", [])
+        if not sessions:
+            return ToolResult(success=True, content="📭 记忆库为空。")
 
-        # 没有关键词 → 列出所有
         if not query:
-            lines = ["📚 记忆列表（最新在前）:\n"]
-            for f in files:
-                mtime = datetime.fromtimestamp(f.stat().st_mtime)
-                date_str = mtime.strftime("%m-%d %H:%M")
-                lines.append(f"  📄 {f.stem}  ({date_str})")
-            return ToolResult(
-                success=True,
-                content="\n".join(lines),
-            )
+            lines = [f"📚 记忆列表（共 {len(sessions)} 次对话）:\n"]
+            for s in sessions:
+                sid = s.get("id", "?")
+                date = s.get("date", "?")
+                summary = s.get("summary", "")[:80]
+                lines.append(f"  🌿 第{sid}次对话 ({date}): {summary}")
+            return ToolResult(success=True, content="\n".join(lines))
 
-        # 有关键词 → 搜索并读取
         found = []
-        for f in files:
-            content = f.read_text(encoding="utf-8")
-            if query.lower() in content.lower() or query.lower() in f.stem.lower():
-                found.append(f"📄 {f.stem}\n\n{content}\n---")
+        for s in sessions:
+            transcript = s.get("transcript", "")
+            summary = s.get("summary", "")
+            if query.lower() in (summary + transcript[:5000]).lower():
+                sid = s.get("id", "?")
+                date = s.get("date", "?")
+                found.append(f"📄 第{sid}次对话 ({date})\n\n{transcript[:3000]}\n---")
 
         if not found:
-            return ToolResult(
-                success=True,
-                content=f"🔍 未找到与「{query}」相关的记忆。",
-            )
+            return ToolResult(success=True, content=f"🔍 未找到与「{query}」相关的记忆。")
 
-        return ToolResult(
-            success=True,
-            content=f"🔍 找到 {len(found)} 条相关记忆:\n\n" + "\n".join(found),
-        )
+        return ToolResult(success=True, content=f"🔍 找到 {len(found)} 条:\n\n" + "\n".join(found))
 
 
 class RecallContextTool(Tool):
-    """回忆上下文 — 加载最近的记忆作为对话背景"""
+    """回忆上下文 — 加载最近对话摘要"""
 
     @property
     def name(self) -> str:
@@ -178,17 +136,14 @@ class RecallContextTool(Tool):
 
     @property
     def description(self) -> str:
-        return "加载最近的记忆摘要，用于在新对话开始时快速回忆上下文。"
+        return "加载最近的对话摘要，用于快速回忆上下文。"
 
     @property
     def parameters(self) -> dict:
         return {
             "type": "object",
             "properties": {
-                "count": {
-                    "type": "integer",
-                    "description": "加载最近几条记忆（默认 5）",
-                },
+                "count": {"type": "integer", "description": "加载最近几次对话（默认 5）"},
             },
             "required": [],
         }
@@ -197,30 +152,25 @@ class RecallContextTool(Tool):
         self.memory_dir = Path(memory_dir)
 
     async def execute(self, count: int = 5) -> ToolResult:
-        if not self.memory_dir.exists():
-            return ToolResult(
-                success=True,
-                content="📭 暂无记忆。",
-            )
+        yaml_path = self.memory_dir / "conversations.yaml"
+        if not yaml_path.exists():
+            return ToolResult(success=True, content="📭 暂无记忆。")
 
-        files = sorted(
-            self.memory_dir.glob("*.md"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True,
-        )
+        try:
+            data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return ToolResult(success=True, content="📭 暂无记忆。")
 
-        if not files:
-            return ToolResult(
-                success=True,
-                content="📭 暂无记忆。",
-            )
+        sessions = data.get("sessions", [])
+        if not sessions:
+            return ToolResult(success=True, content="📭 暂无记忆。")
 
-        lines = ["🧠 最近的记忆:\n"]
-        for f in files[:count]:
-            content = f.read_text(encoding="utf-8")
-            lines.append(f"### {f.stem}\n{content}\n")
+        recent = sessions[-count:]
+        lines = [f"🧠 最近 {len(recent)} 次对话:\n"]
+        for s in reversed(recent):
+            sid = s.get("id", "?")
+            date = s.get("date", "?")
+            summary = s.get("summary", "")[:300]
+            lines.append(f"### 第{sid}次对话 ({date})\n{summary}\n")
 
-        return ToolResult(
-            success=True,
-            content="\n".join(lines),
-        )
+        return ToolResult(success=True, content="\n".join(lines))

@@ -120,29 +120,31 @@ def build_system_prompt() -> str:
 用户说「导入镜头」时，调用 film_import。
 用户说「导入照片」「处理照片」「整理照片」「处理我的照片」「生成索引」时，调用 photo_import。
 用户说「导入音乐」「导入专辑」「导入封面」「整理乐库」时，调用 music_import。
-不要自己写脚本替代已有工具——工具已实现完整功能，直接调用即可。"""
+不要自己写脚本替代已有工具——工具已实现完整功能，直接调用即可。
+
+## 记忆库访问
+
+每次对话开头已自动注入「🧠 相关记忆」——请先阅读它，基于记忆回答，不要忽略。
+- 「回忆之前聊过什么」「搜索记忆中的XX」→ recall_context 或 read_memory
+- 「参考影库」「影库里有什么」「看某电影的笔记」→ film_analyze
+- 「找照片」「我拍过的照片」→ photo_import 已有索引，直接检索即可
+- 永远不要用 read_file 或 list_dir 去翻 memory/ 目录——记忆工具有专门的检索入口"""
 
 
 def load_last_conversation() -> str:
     """加载最近一次完整对话，用于'接着聊'功能"""
-    mem_dir = Path(MEMORY_DIR)
-    if not mem_dir.exists():
+    yaml_path = Path(MEMORY_DIR) / "conversations.yaml"
+    if not yaml_path.exists():
         return ""
 
-    files = sorted(
-        mem_dir.glob("*.md"),
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
-    )[:1]
-
-    if not files:
+    try:
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        sessions = data.get("sessions", [])
+        if not sessions:
+            return ""
+        return sessions[-1].get("transcript", "")
+    except Exception:
         return ""
-
-    content = files[0].read_text(encoding="utf-8")
-    # 取完整对话部分（在 ## 完整对话 之后）
-    if "## 完整对话" in content:
-        content = content.split("## 完整对话", 1)[1]
-    return content
 
 
 
@@ -154,7 +156,6 @@ async def save_session_summary(agent: Agent, vector_memory=None):
         if m.role == "system" or not isinstance(m.content, str) or not m.content:
             continue
         content = m.content
-        # 切掉语义搜索注入的「相关记忆」块，避免套娃
         if "## 🧠 相关记忆" in content:
             parts = content.split("---\n\n", 1)
             content = parts[1] if len(parts) > 1 else content
@@ -172,6 +173,7 @@ async def save_session_summary(agent: Agent, vector_memory=None):
             user_only.append(u)
 
     # 让 LLM 提炼摘要
+    summary = ""
     summary_prompt = (
         "请用 200 字以内总结以下对话的重要信息：\n"
         "1. 讨论了什么\n2. 关键决定\n3. 用户偏好\n4. 下一步\n\n"
@@ -184,30 +186,39 @@ async def save_session_summary(agent: Agent, vector_memory=None):
             messages=[Message(role="user", content=summary_prompt)],
         )
         summary = response.content
-
-        from datetime import datetime
-        now = datetime.now()
-        entry = (
-            f"# 会话 {now.strftime('%Y-%m-%d %H:%M')}\n\n"
-            f"## 摘要\n\n{summary}\n\n"
-            f"---\n\n"
-            f"## 完整对话\n\n{full_transcript}"
-        )
-
-        journal = Path(MEMORY_DIR) / "journal.md"
-        journal.parent.mkdir(parents=True, exist_ok=True)
-        with open(journal, "a", encoding="utf-8") as f:
-            if journal.exists():
-                f.write(f"\n\n---\n\n{entry}")
-            else:
-                f.write(entry)
     except Exception as e:
-        print(f"\n{YELLOW}⚠️ 保存记忆失败: {e}{RESET}")
+        print(f"\n{YELLOW}⚠️ 摘要生成失败: {e}{RESET}")
 
-    # ── 增量更新向量库（只索引变更的文件）──
+    # 写入 conversations.yaml
+    from datetime import datetime
+    now = datetime.now()
+    conv_yaml = Path(MEMORY_DIR) / "conversations.yaml"
+
+    try:
+        data = yaml.safe_load(conv_yaml.read_text(encoding="utf-8")) if conv_yaml.exists() else {}
+    except Exception:
+        data = {}
+
+    sessions = data.get("sessions", [])
+    new_id = len(sessions) + 1
+    sessions.append({
+        "id": new_id,
+        "date": now.strftime("%Y-%m-%d"),
+        "summary": summary,
+        "transcript": full_transcript,
+    })
+
+    conv_yaml.parent.mkdir(parents=True, exist_ok=True)
+    conv_yaml.write_text(
+        yaml.dump({"sessions": sessions}, allow_unicode=True, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    # ── 增量更新向量库（只索引新增内容单元）──
     if vector_memory:
         try:
             vector_memory.index_conversations()
+            vector_memory.index_notes()
             vector_memory.index_film_library()
             vector_memory.index_music_library()
             vector_memory.index_photo_library()
@@ -217,6 +228,17 @@ async def save_session_summary(agent: Agent, vector_memory=None):
 
 async def main():
     print_banner()
+
+    # ── 会话计数 ──────────────────────────
+    conv_yaml = Path(MEMORY_DIR) / "conversations.yaml"
+    session_count = 1
+    if conv_yaml.exists():
+        try:
+            data = yaml.safe_load(conv_yaml.read_text(encoding="utf-8"))
+            session_count = len(data.get("sessions", [])) + 1
+        except Exception:
+            pass
+    print(f"{LEAF}🌸 你好菘蕊萱，这是我们的第 {session_count} 次对话{RESET}\n")
 
     # ── DeepSeek 全栈 ──────────────────────
     # LLM + Vision + 文档生成，全部走 DeepSeek
@@ -282,10 +304,11 @@ async def main():
     # ── 启动时增量同步向量库（检测各库文件变更，仅索引新增部分）──
     print(f"{DIM}🧠 正在同步向量库...{RESET}", end=" ", flush=True)
     n_conv = vector_memory.index_conversations()
+    n_notes = vector_memory.index_notes()
     n_film = vector_memory.index_film_library()
     n_music = vector_memory.index_music_library()
     n_photo = vector_memory.index_photo_library()
-    total_new = n_conv + n_film + n_music + n_photo
+    total_new = n_conv + n_notes + n_film + n_music + n_photo
     if total_new > 0:
         print(f"{GREEN}✅ 已同步{RESET}\n")
     else:

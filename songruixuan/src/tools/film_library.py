@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class FilmCreateTool(Tool):
-    """在 notes.md 追加新电影的内容大纲"""
+    """在 notes.yaml 追加新电影的内容大纲"""
 
     def __init__(self, film_library_dir: str):
         self.base = Path(film_library_dir)
@@ -25,8 +25,7 @@ class FilmCreateTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "在影库 notes.md 中追加一部新电影的笔记。说「学习某电影」时调用。"
-            "不建子目录，所有电影的笔记在同一个 notes.md 里。"
+            "在影库 notes.yaml 中追加一部新电影的笔记。说「学习某电影」时调用。"
         )
 
     @property
@@ -38,30 +37,42 @@ class FilmCreateTool(Tool):
         }
 
     async def execute(self, name: str) -> ToolResult:
-        notes = self.base / "notes.md"
+        yaml_path = self.base / "notes.yaml"
         self.base.mkdir(parents=True, exist_ok=True)
 
-        # 检查是否已有
-        if notes.exists() and f"# {name}" in notes.read_text(encoding="utf-8"):
-            return ToolResult(success=False, error=f"「{name}」已在 notes.md 中")
+        # 读已有数据
+        data = {}
+        if yaml_path.exists():
+            try:
+                data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                pass
 
-        entry = (
-            f"\n\n---\n\n"
-            f"# {name}\n\n"
-            f"## 内容大纲\n\n\n"
-            f"## 深度解析\n\n\n"
+        films = data.get("films", [])
+
+        # 检查是否已有
+        for f in films:
+            if f.get("name") == name:
+                return ToolResult(success=False, error=f"「{name}」已在 notes.yaml 中")
+
+        films.append({
+            "name": name,
+            "content": "## 内容大纲\n\n\n## 深度解析\n\n\n",
+        })
+
+        yaml_path.write_text(
+            yaml.dump({"films": films}, allow_unicode=True, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
         )
-        with open(notes, "a", encoding="utf-8") as f:
-            f.write(entry)
 
         return ToolResult(
             success=True,
-            content=f"🎬 「{name}」已追加到 notes.md\n请用 web_search 搜索该电影，填写内容大纲。"
+            content=f"🎬 「{name}」已追加到 notes.yaml\n请用 web_search 搜索该电影，填写内容大纲。"
         )
 
 
 class FilmAnalyzeTool(Tool):
-    """读 notes.md 中影评 → 糅合正反面"""
+    """读 notes.yaml 中影评 → 糅合正反面"""
 
     def __init__(self, film_library_dir: str):
         self.base = Path(film_library_dir)
@@ -73,8 +84,8 @@ class FilmAnalyzeTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "读取 notes.md 中某部电影的深度解析部分（用户粘贴的影评），"
-            "将其糅合成一篇完整分析（正面+反面）。说「深度分析某电影」时调用。"
+            "读取 notes.yaml 中某部电影的笔记（含深度解析）。"
+            "用于检索影库中的电影分析、参考已有笔记。说「深度分析某电影」「参考影库」「看某电影的笔记」时调用。"
         )
 
     @property
@@ -86,27 +97,29 @@ class FilmAnalyzeTool(Tool):
         }
 
     async def execute(self, film_name: str) -> ToolResult:
-        notes = self.base / "notes.md"
-        if not notes.exists():
-            return ToolResult(success=False, error="notes.md 不存在")
+        yaml_path = self.base / "notes.yaml"
+        if not yaml_path.exists():
+            return ToolResult(success=False, error="notes.yaml 不存在")
 
-        content = notes.read_text(encoding="utf-8")
-        # 找到对应电影的段落
-        marker = f"# {film_name}"
-        if marker not in content:
-            return ToolResult(success=False, error=f"notes.md 中没有「{film_name}」")
+        try:
+            data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return ToolResult(success=False, error="notes.yaml 读取失败")
 
-        sections = content.split("\n\n---\n\n")
-        film_section = ""
-        for s in sections:
-            if s.strip().startswith(marker):
-                film_section = s
+        films = data.get("films", [])
+        film_content = ""
+        for f in films:
+            if f.get("name") == film_name:
+                film_content = f.get("content", "")
                 break
+
+        if not film_content:
+            return ToolResult(success=False, error=f"notes.yaml 中没有「{film_name}」")
 
         return ToolResult(
             success=True,
             content=(
-                f"📄 {film_name} 当前笔记:\n\n{film_section}\n\n"
+                f"📄 《{film_name}》当前笔记:\n\n{film_content}\n\n"
                 "---\n请将「深度解析」下的影评原文糅合成一篇完整分析"
                 "（正面+反面，语言连贯），替换掉深度解析部分。"
             ),
@@ -145,7 +158,7 @@ class FilmImportTool(Tool):
         images = sorted(
             [f for f in self.base.iterdir()
              if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif")
-             and f.name not in ("notes.md", "index.yaml")],
+             and f.name not in ("notes.yaml", "notes.md", "index.yaml")],
             key=lambda f: f.stat().st_mtime,
         )
         if not images:
@@ -184,21 +197,17 @@ class FilmImportTool(Tool):
             scene = ""
             tags = []
             if self.vision and ext in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
-                # ── 从 notes.md 提取电影的视觉风格上下文（完整章节，不截断）──
+                # ── 从 notes.yaml 提取电影的视觉风格上下文 ──
                 context_hint = ""
-                notes_path = self.base / "notes.md"
+                notes_path = self.base / "notes.yaml"
                 if notes_path.exists():
-                    notes = notes_path.read_text(encoding="utf-8")
-                    marker = f"# {film_name}"
-                    if marker in notes:
-                        # 定位电影区块边界
-                        film_start = notes.find(marker)
-                        rest = notes[film_start + len(marker):]
-                        next_film = rest.find("\n# ")
-                        if next_film != -1:
-                            film_section = notes[film_start:film_start + len(marker) + next_film]
-                        else:
-                            film_section = notes[film_start:]
+                    try:
+                        data = yaml.safe_load(notes_path.read_text(encoding="utf-8")) or {}
+                        film_section = ""
+                        for f in data.get("films", []):
+                            if f.get("name") == film_name:
+                                film_section = f.get("content", "")
+                                break
 
                         context_parts = []
 
@@ -241,6 +250,8 @@ class FilmImportTool(Tool):
                                 + "\n\n".join(context_parts)
                                 + "\n\n---\n"
                             )
+                    except Exception:
+                        pass
 
                 prompt = (
                     f"{context_hint}"

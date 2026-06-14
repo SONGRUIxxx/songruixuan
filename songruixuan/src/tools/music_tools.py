@@ -37,13 +37,13 @@ class MusicImportTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "album": {"type": "string", "description": "专辑/作品名称，用于 ChromaDB 标记"},
+                "album": {"type": "string", "description": "歌曲名称（选填）"},
                 "label": {"type": "string", "description": "可选标签，如：电影原声、电子、古典"},
             },
-            "required": ["album"],
+            "required": [],
         }
 
-    async def execute(self, album: str, label: str = "") -> ToolResult:
+    async def execute(self, album: str = "", label: str = "") -> ToolResult:
         self.base.mkdir(parents=True, exist_ok=True)
 
         # 加载现有索引
@@ -107,8 +107,7 @@ class MusicImportTool(Tool):
 
             tracks.append({
                 "file": new_name,
-                "album": album,
-                "title": "",
+                "title": album,
                 "label": label,
                 "desc": desc,
             })
@@ -132,8 +131,8 @@ class MusicImportTool(Tool):
                 desc = tr.get("desc", "")
                 if not desc or not tname:
                     continue
-                doc_id = f"{album}__{tname}"
-                full_text = f"《{album}》{tname}: {desc}"
+                doc_id = f"track_{tname}"
+                full_text = f"{tname}: {desc}"
                 # 清除旧记录
                 for old_id in list(exist_ids):
                     if old_id.startswith(doc_id):
@@ -142,7 +141,7 @@ class MusicImportTool(Tool):
                 if len(full_text) <= cs:
                     th = hashlib.md5(desc[:200].encode()).hexdigest()[:8]
                     mc.add(ids=[f"{doc_id}__{th}"], documents=[full_text[:1200]],
-                           metadatas=[{"album": album, "track": tname, "desc": desc[:800], "source": str(idx_path)}])
+                           metadatas=[{"title": album, "track": tname, "desc": desc[:800], "source": str(idx_path)}])
                     indexed += 1
                 else:
                     for i, p_off in enumerate(range(0, len(full_text), cs - ol)):
@@ -151,7 +150,7 @@ class MusicImportTool(Tool):
                             continue
                         c_hash = hashlib.md5(chunk[:200].encode()).hexdigest()[:8]
                         mc.add(ids=[f"{doc_id}_chunk_{i}__{c_hash}"], documents=[chunk[:1200]],
-                               metadatas=[{"album": album, "track": tname, "desc": chunk[:800], "source": str(idx_path), "chunk_index": i}])
+                               metadatas=[{"title": album, "track": tname, "desc": chunk[:800], "source": str(idx_path), "chunk_index": i}])
                         indexed += 1
 
         return ToolResult(
