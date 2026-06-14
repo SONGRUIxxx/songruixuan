@@ -124,7 +124,7 @@ class VectorMemory:
 
     def _file_changed(self, filepath: Path) -> bool:
         """检查文件自上次索引后是否有变更（用 mtime+size 摘要）"""
-        key = f"__meta__{filepath.name}"
+        key = f"__meta__{filepath.parent.name}_{filepath.name}"
         current = self._file_hash(filepath)
         # 从任意 collection 读 meta（用 conversations 兜底）
         results = self.collection.get(ids=[key])
@@ -135,7 +135,7 @@ class VectorMemory:
 
     def _mark_indexed(self, filepath: Path):
         """记录文件已被索引"""
-        key = f"__meta__{filepath.name}"
+        key = f"__meta__{filepath.parent.name}_{filepath.name}"
         current = self._file_hash(filepath)
         self.collection.upsert(
             ids=[key],
@@ -223,7 +223,10 @@ class VectorMemory:
         return indexed
 
     def _index_one_file(self, md_file, doc_id, existing_ids):
-        """索引单个 .md 文件：内容短则存一条，长则 2000/500 滑动窗口分块"""
+        """索引单个 .md 文件：内容短则存一条，长则 2000/500 滑动窗口分块。
+        用 mtime+size 检测变更，未变则跳过。"""
+        if not self._file_changed(md_file):
+            return
         current_hash = self._file_hash(md_file)
         # 清除旧记录（可能之前是单条，现在要分块）
         for old_id in list(existing_ids):
@@ -251,6 +254,7 @@ class VectorMemory:
                     documents=[chunk[:1200]],
                     metadatas=[{"source": str(md_file), "title": f"{doc_id}[{i}]", "preview": chunk[:800], "chunk_index": i}],
                 )
+        self._mark_indexed(md_file)
 
     def search(self, query: str, n: int = 5) -> list[dict]:
         """搜对话记忆"""

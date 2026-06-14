@@ -279,20 +279,17 @@ async def main():
         workspace_dir=WORKSPACE,
     )
 
-    # ── ChromaDB 冷启动自动初始化 ──────────
-    total_count = (
-        vector_memory.collection.count()
-        + vector_memory.get_or_create_film_collection().count()
-        + vector_memory.get_or_create_music_collection().count()
-        + vector_memory.get_or_create_photo_collection().count()
-    )
-    if total_count == 0:
-        print(f"{DIM}🧠 正在初始化向量库...{RESET}", end=" ", flush=True)
-        vector_memory.index_conversations()
-        vector_memory.index_film_library()
-        vector_memory.index_music_library()
-        vector_memory.index_photo_library()
-        print(f"{GREEN}✅ 初始化完成{RESET}\n")
+    # ── 启动时增量同步向量库（检测各库文件变更，仅索引新增部分）──
+    print(f"{DIM}🧠 正在同步向量库...{RESET}", end=" ", flush=True)
+    n_conv = vector_memory.index_conversations()
+    n_film = vector_memory.index_film_library()
+    n_music = vector_memory.index_music_library()
+    n_photo = vector_memory.index_photo_library()
+    total_new = n_conv + n_film + n_music + n_photo
+    if total_new > 0:
+        print(f"{GREEN}✅ 已同步{RESET}\n")
+    else:
+        print(f"{DIM}已是最新{RESET}\n")
 
     # ── 终端会话 ──────────────────────────
     history_file = Path.home() / ".songruixuan" / ".history"
