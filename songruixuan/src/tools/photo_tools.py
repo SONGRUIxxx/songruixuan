@@ -172,24 +172,39 @@ class PhotoImportTool(Tool):
                 encoding="utf-8",
             )
 
-        # ChromaDB
+        # ChromaDB: 增量索引新照片（2000/500 滑动窗口分块），不动已有条目
         indexed = 0
         if self.vm:
+            import hashlib
             pc = self.vm.get_or_create_photo_collection()
             exist_ids = set(pc.get()["ids"]) if pc.count() > 0 else set()
-            for fr in photos[-processed_count:]:
+            cs, ol = 2000, 500
+            for fr in photos[-analyzed_count:]:
                 fname = fr["file"]
+                desc = fr.get("desc", "")
+                if not desc:
+                    continue
                 pid = f"photo_{fname}"
-                import hashlib
-                ph = hashlib.md5((fr.get("desc", "")[:200]).encode()).hexdigest()[:8]
-                chroma_id = f"{pid}__{ph}"
-                if chroma_id not in exist_ids:
-                    pc.add(
-                        ids=[chroma_id],
-                        documents=[f"{fname}: {fr.get('desc','')}"[:1200]],
-                        metadatas=[{"file": fname, "desc": fr.get("desc", "")[:400], "label": label}],
-                    )
+                full_text = f"{fname}: {desc}"
+                # 清除旧记录
+                for old_id in list(exist_ids):
+                    if old_id.startswith(pid):
+                        pc.delete(ids=[old_id])
+                        exist_ids.discard(old_id)
+                if len(full_text) <= cs:
+                    ph = hashlib.md5(desc[:200].encode()).hexdigest()[:8]
+                    pc.add(ids=[f"{pid}__{ph}"], documents=[full_text[:1200]],
+                           metadatas=[{"file": fname, "desc": desc[:800], "source": str(idx_path)}])
                     indexed += 1
+                else:
+                    for i, p_off in enumerate(range(0, len(full_text), cs - ol)):
+                        chunk = full_text[p_off:p_off + cs]
+                        if not chunk.strip():
+                            continue
+                        c_hash = hashlib.md5(chunk[:200].encode()).hexdigest()[:8]
+                        pc.add(ids=[f"{pid}_chunk_{i}__{c_hash}"], documents=[chunk[:1200]],
+                               metadatas=[{"file": fname, "desc": chunk[:800], "source": str(idx_path), "chunk_index": i}])
+                        indexed += 1
 
         return ToolResult(
             success=True,

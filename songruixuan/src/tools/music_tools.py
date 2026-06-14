@@ -120,24 +120,39 @@ class MusicImportTool(Tool):
                 encoding="utf-8",
             )
 
-        # ChromaDB
+        # ChromaDB: 增量索引新曲目（2000/500 滑动窗口分块），不动已有条目
         indexed = 0
         if self.vm:
             import hashlib
             mc = self.vm.get_or_create_music_collection()
             exist_ids = set(mc.get()["ids"]) if mc.count() > 0 else set()
+            cs, ol = 2000, 500
             for tr in tracks[-processed:]:
-                tname = tr["file"]
+                tname = tr.get("file", tr.get("title", ""))
+                desc = tr.get("desc", "")
+                if not desc or not tname:
+                    continue
                 doc_id = f"{album}__{tname}"
-                th = hashlib.md5((tr.get("desc", "")[:200]).encode()).hexdigest()[:8]
-                chroma_id = f"{doc_id}__{th}"
-                if chroma_id not in exist_ids:
-                    mc.add(
-                        ids=[chroma_id],
-                        documents=[f"《{album}》{tname}: {tr.get('desc','')}"[:1200]],
-                        metadatas=[{"album": album, "track": tname, "desc": tr.get("desc","")[:400], "label": label}],
-                    )
+                full_text = f"《{album}》{tname}: {desc}"
+                # 清除旧记录
+                for old_id in list(exist_ids):
+                    if old_id.startswith(doc_id):
+                        mc.delete(ids=[old_id])
+                        exist_ids.discard(old_id)
+                if len(full_text) <= cs:
+                    th = hashlib.md5(desc[:200].encode()).hexdigest()[:8]
+                    mc.add(ids=[f"{doc_id}__{th}"], documents=[full_text[:1200]],
+                           metadatas=[{"album": album, "track": tname, "desc": desc[:800], "source": str(idx_path)}])
                     indexed += 1
+                else:
+                    for i, p_off in enumerate(range(0, len(full_text), cs - ol)):
+                        chunk = full_text[p_off:p_off + cs]
+                        if not chunk.strip():
+                            continue
+                        c_hash = hashlib.md5(chunk[:200].encode()).hexdigest()[:8]
+                        mc.add(ids=[f"{doc_id}_chunk_{i}__{c_hash}"], documents=[chunk[:1200]],
+                               metadatas=[{"album": album, "track": tname, "desc": chunk[:800], "source": str(idx_path), "chunk_index": i}])
+                        indexed += 1
 
         return ToolResult(
             success=True,

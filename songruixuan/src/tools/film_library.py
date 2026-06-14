@@ -184,20 +184,75 @@ class FilmImportTool(Tool):
             scene = ""
             tags = []
             if self.vision and ext in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
-                # 读 notes.md 获取电影风格参考
+                # ── 从 notes.md 提取电影的视觉风格上下文（完整章节，不截断）──
                 context_hint = ""
                 notes_path = self.base / "notes.md"
                 if notes_path.exists():
                     notes = notes_path.read_text(encoding="utf-8")
-                    # 找该电影相关段落（前后 500 字）
                     marker = f"# {film_name}"
                     if marker in notes:
-                        idx = notes.find(marker)
-                        snippet = notes[max(0,idx-200):idx+800]
-                        context_hint = f"参考这部电影的整体风格：{snippet[:500]}。"
-                vr = await self.vision.execute(
-                    image=str(new_path),
-                    prompt=f"{context_hint}用中文描述这个镜头的构图、色调、光线和情绪氛围。给出3-5个标签。",
+                        # 定位电影区块边界
+                        film_start = notes.find(marker)
+                        rest = notes[film_start + len(marker):]
+                        next_film = rest.find("\n# ")
+                        if next_film != -1:
+                            film_section = notes[film_start:film_start + len(marker) + next_film]
+                        else:
+                            film_section = notes[film_start:]
+
+                        context_parts = []
+
+                        # 辅助函数：从文本中提取以 ### 开头的子章节
+                        def _extract_subsection(text: str, *keywords: str) -> str:
+                            """提取 ### 标题匹配任一关键词的子章节，到下一个同级/上级标题为止"""
+                            lines = text.split('\n')
+                            for i, line in enumerate(lines):
+                                stripped = line.strip()
+                                if stripped.startswith('###') and any(kw in stripped for kw in keywords):
+                                    # 找到起止：从标题行到下一个 ### / ## / #
+                                    body_start = i
+                                    body_end = len(lines)
+                                    for j in range(i + 1, len(lines)):
+                                        if lines[j].strip().startswith('###') or lines[j].strip().startswith('##') or lines[j].strip().startswith('# '):
+                                            body_end = j
+                                            break
+                                    return '\n'.join(lines[body_start:body_end]).strip()
+                            return ""
+
+                        # 1. 视觉风格
+                        vis = _extract_subsection(film_section, "视觉风格", "四、视觉")
+                        if vis:
+                            context_parts.append(vis)
+
+                        # 2. 关键场景索引
+                        scenes_idx = _extract_subsection(film_section, "关键场景索引", "八、关键场景")
+                        if scenes_idx:
+                            context_parts.append(scenes_idx)
+
+                        # 3. 色彩系统 / 光线相关章节（如果有独立子章节的话）
+                        color = _extract_subsection(film_section, "色彩系统", "光线")
+                        if color and color != vis:
+                            context_parts.append(color)
+
+                        if context_parts:
+                            context_hint = (
+                                f"以下是电影《{film_name}》的视觉风格与关键场景参考，"
+                                f"请用其中的视觉词汇来描述这张截图：\n\n"
+                                + "\n\n".join(context_parts)
+                                + "\n\n---\n"
+                            )
+
+                prompt = (
+                    f"{context_hint}"
+                    f"分三步描述这个镜头：\n"
+                    f"第一步——画面内容：描述画面上具体有什么。人物是谁、在做什么动作、穿什么、什么表情。"
+                    f"画面里有哪些物件、在什么位置。空间是怎样的（室内/室外、什么房间/场景）。"
+                    f"第二步——视觉分析：用上面电影笔记里的视觉词汇来分析这个镜头的构图、光线、色调。"
+                    f"如果画面里有笔记中提到的视觉标志（例如特定的布光方式、色彩、道具），一定要指出来。"
+                    f"第三步——场景判断：这个帧可能对应笔记里的哪个关键场景？"
+                    f"\n要求：平实、准确、有细节。禁止使用「这张图片展示了」「一个经典的电影场景」「充满了...的氛围」等万能套话。"
+                    f"禁止给描述加小标题分段（如### 构图）。用一个自然段落写完。"
+                    f"\n最后单独一行给出3-5个标签，格式：标签：标签1, 标签2, 标签3"
                 )
                 if vr.success:
                     desc = vr.content.replace("👁️ ", "").strip()
@@ -222,28 +277,50 @@ class FilmImportTool(Tool):
             encoding="utf-8",
         )
 
-        # ChromaDB
+        # ChromaDB: 增量索引新帧（2000/500 滑动窗口分块），不动已有条目
         indexed = 0
         if self.vm:
             fc = self.vm.get_or_create_film_collection()
             exist_ids = set(fc.get()["ids"]) if fc.count() > 0 else set()
+            cs, ol = 2000, 500
             for fr in frames[-analyzed:]:
                 fname = fr["file"]
+                desc = fr.get("desc", "")
+                if not desc:
+                    continue
                 doc_id = f"{film_name}__{fname}"
-                f_hash = __import__('hashlib').md5((fr.get("desc","")[:200]).encode()).hexdigest()[:12]
-                chroma_id = f"{doc_id}__{f_hash}"
-                if chroma_id not in exist_ids:
-                    for old in exist_ids:
-                        if old.startswith(f"{film_name}__{fname}"):
-                            fc.delete(ids=[old]); break
+                full_text = f"《{film_name}》{fname}: {desc}"
+
+                # 清除该帧旧记录
+                for old_id in list(exist_ids):
+                    if old_id.startswith(doc_id):
+                        fc.delete(ids=[old_id])
+                        exist_ids.discard(old_id)
+
+                if len(full_text) <= cs:
+                    f_hash = __import__('hashlib').md5(desc[:200].encode()).hexdigest()[:12]
+                    chroma_id = f"{doc_id}__{f_hash}"
                     fc.add(
                         ids=[chroma_id],
-                        documents=[f"《{film_name}》{fname}: {fr.get('desc','')}"[:1200]],
-                        metadatas=[{"film": film_name, "frame": fname, "desc": fr.get("desc","")[:400]}],
+                        documents=[full_text[:1200]],
+                        metadatas=[{"film": film_name, "frame": fname, "desc": desc[:800], "source": str(idx_path)}],
                     )
                     indexed += 1
+                else:
+                    for i, p in enumerate(range(0, len(full_text), cs - ol)):
+                        chunk = full_text[p:p + cs]
+                        if not chunk.strip():
+                            continue
+                        c_hash = __import__('hashlib').md5(chunk[:200].encode()).hexdigest()[:8]
+                        chroma_id = f"{doc_id}_chunk_{i}__{c_hash}"
+                        fc.add(
+                            ids=[chroma_id],
+                            documents=[chunk[:1200]],
+                            metadatas=[{"film": film_name, "frame": fname, "desc": chunk[:800], "source": str(idx_path), "chunk_index": i}],
+                        )
+                        indexed += 1
 
         return ToolResult(
             success=True,
-            content=f"🎬 {film_name}: {len(images)} 张 → {max_num-len(images)+1:03d}~{max_num:03d}, {analyzed} 已分析, {indexed} 入 ChromaDB"
+            content=f"🎬 {film_name}: {len(images)} 张 → {max_num-len(images)+1:03d}~{max_num:03d}, {analyzed} 已分析, {indexed} 条已入 ChromaDB（含分块）"
         )

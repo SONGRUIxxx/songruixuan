@@ -91,12 +91,57 @@ class VectorMemory:
         memories = []
         if results["metadatas"] and results["metadatas"][0]:
             for meta in results["metadatas"][0]:
+                source_path = meta.get("source", "")
+                preview = meta.get("preview", meta.get("desc", ""))
+                # 尝试回读源文件获取完整内容
+                full_content = ""
+                if source_path:
+                    sp = Path(source_path)
+                    if sp.exists() and sp.suffix == ".md":
+                        # 聚合文件（如 journal.md）可能巨大，只用匹配到的分块；
+                        # 独立小文件（单次会话）完整读取
+                        if sp.stat().st_size < 10000:
+                            try:
+                                full_content = sp.read_text(encoding="utf-8")
+                            except Exception:
+                                full_content = preview
+                        else:
+                            full_content = preview
+                    elif sp.suffix in (".yaml", ".yml"):
+                        full_content = preview
+                    else:
+                        full_content = preview
+                else:
+                    full_content = preview
+
                 memories.append({
                     "title": meta.get("title", meta.get("film", meta.get("album", ""))),
-                    "preview": meta.get("preview", meta.get("desc", "")),
-                    "source": meta.get("source", meta.get("film", meta.get("album", ""))),
+                    "preview": preview,
+                    "full_content": full_content,
+                    "source": source_path,
                 })
         return memories
+
+    def _file_changed(self, filepath: Path) -> bool:
+        """检查文件自上次索引后是否有变更（用 mtime+size 摘要）"""
+        key = f"__meta__{filepath.name}"
+        current = self._file_hash(filepath)
+        # 从任意 collection 读 meta（用 conversations 兜底）
+        results = self.collection.get(ids=[key])
+        if results["ids"] and results["metadatas"]:
+            stored = results["metadatas"][0].get("hash", "")
+            return stored != current
+        return True  # 没存过 → 视为变更
+
+    def _mark_indexed(self, filepath: Path):
+        """记录文件已被索引"""
+        key = f"__meta__{filepath.name}"
+        current = self._file_hash(filepath)
+        self.collection.upsert(
+            ids=[key],
+            documents=[f"index meta: {filepath.name}"],
+            metadatas=[{"hash": current, "file": str(filepath)}],
+        )
 
     # ── 对话记忆索引 ──────────────────────────────
 
@@ -114,65 +159,141 @@ class VectorMemory:
             self._index_one_file(md_file, md_file.stem, existing_ids)
             indexed += 1
 
-        # 2. 索引 journal.md：每次启动清空旧索引，从头分块重建
+        # 2. 索引 journal.md：增量追加（文件变大只处理新增部分）
         journal = self.memory_dir / "journal.md"
         if journal.exists():
-            old_ids = self.collection.get()["ids"]
-            for oid in old_ids:
-                if oid.startswith("j_"):
-                    self.collection.delete(ids=[oid])
-            content = journal.read_text(encoding="utf-8")
+            key = "__meta__journal.md"
             cs, ol = 2000, 500
-            for i, p in enumerate(range(0, len(content), cs - ol)):
-                chunk = content[p:p + cs]
-                if not chunk.strip():
-                    continue
-                chroma_id = f"j_{i}__{hashlib.md5(chunk[:200].encode()).hexdigest()[:8]}"
-                self.collection.add(
-                    ids=[chroma_id],
-                    documents=[chunk[:1200]],
-                    metadatas=[{"source": str(journal), "title": f"journal-{i+1}", "preview": chunk[:400]}],
+            step = cs - ol  # 1500
+
+            content = journal.read_text(encoding="utf-8")
+            current_size = len(content)
+
+            # 读取上次索引时的文件大小
+            results = self.collection.get(ids=[key])
+            last_size = 0
+            if results["ids"] and results["metadatas"]:
+                last_size = results["metadatas"][0].get("last_size", 0)
+
+            if current_size == last_size:
+                pass  # 没变，跳过
+            elif current_size < last_size:
+                # 文件缩小（手动删了内容）→ 全量重建
+                for oid in list(existing_ids):
+                    if oid.startswith("j_"):
+                        self.collection.delete(ids=[oid])
+                start_pos = 0
+                start_chunk = 0
+            else:
+                # 文件增大 → 增量：从 last_size - cs 处开始，覆盖可能断裂的最后一个分块
+                start_chunk = max(0, (last_size - cs) // step)
+                start_pos = start_chunk * step
+                # 删除受影响的旧分块
+                for oid in list(existing_ids):
+                    if oid.startswith("j_"):
+                        try:
+                            idx_str = oid.split("_")[1]
+                            idx_str = idx_str.split("__")[0]
+                            if int(idx_str) >= start_chunk:
+                                self.collection.delete(ids=[oid])
+                        except (ValueError, IndexError):
+                            pass
+
+            if current_size != last_size:
+                for i, p in enumerate(range(start_pos, current_size, step)):
+                    chunk = content[p:p + cs]
+                    if not chunk.strip():
+                        continue
+                    chunk_idx = start_chunk + i
+                    chroma_id = f"j_{chunk_idx}__{hashlib.md5(chunk[:200].encode()).hexdigest()[:8]}"
+                    self.collection.add(
+                        ids=[chroma_id],
+                        documents=[chunk[:1200]],
+                        metadatas=[{"source": str(journal), "title": f"journal-{chunk_idx+1}", "preview": chunk[:800]}],
+                    )
+                    indexed += 1
+
+                # 记录本次索引状态
+                self.collection.upsert(
+                    ids=[key],
+                    documents=["index meta: journal.md"],
+                    metadatas=[{"hash": self._file_hash(journal), "file": str(journal), "last_size": current_size}],
                 )
-                indexed += 1
 
         return indexed
 
     def _index_one_file(self, md_file, doc_id, existing_ids):
+        """索引单个 .md 文件：内容短则存一条，长则 2000/500 滑动窗口分块"""
         current_hash = self._file_hash(md_file)
-        chroma_id = f"{doc_id}__{current_hash}"
-        if chroma_id in existing_ids:
-            return
-        for old_id in existing_ids:
-            if old_id.startswith(f"{doc_id}__"):
-                self.collection.delete(ids=[old_id]); break
+        # 清除旧记录（可能之前是单条，现在要分块）
+        for old_id in list(existing_ids):
+            if old_id.startswith(f"{doc_id}__") or old_id.startswith(f"{doc_id}_chunk_"):
+                self.collection.delete(ids=[old_id])
+                existing_ids.discard(old_id)
         content = md_file.read_text(encoding="utf-8")
-        self.collection.add(
-            ids=[chroma_id], documents=[content[:1200]],
-            metadatas=[{"source": str(md_file), "title": doc_id, "preview": content[:400]}],
-        )
+        cs, ol = 2000, 500
+        if len(content) <= cs:
+            chroma_id = f"{doc_id}__{current_hash}"
+            self.collection.add(
+                ids=[chroma_id],
+                documents=[content[:1200]],
+                metadatas=[{"source": str(md_file), "title": doc_id, "preview": content[:800]}],
+            )
+        else:
+            for i, p in enumerate(range(0, len(content), cs - ol)):
+                chunk = content[p:p + cs]
+                if not chunk.strip():
+                    continue
+                c_hash = hashlib.md5(chunk[:200].encode()).hexdigest()[:8]
+                chroma_id = f"{doc_id}_chunk_{i}__{c_hash}"
+                self.collection.add(
+                    ids=[chroma_id],
+                    documents=[chunk[:1200]],
+                    metadatas=[{"source": str(md_file), "title": f"{doc_id}[{i}]", "preview": chunk[:800], "chunk_index": i}],
+                )
 
     def search(self, query: str, n: int = 5) -> list[dict]:
         """搜对话记忆"""
         return self._search_col(self.collection, query, n)
 
     def add_memory(self, title: str, content: str):
-        chroma_id = f"{title}__{self._text_hash(content)}"
-        self.collection.add(
-            ids=[chroma_id],
-            documents=[f"# {title}\n\n{content}"[:1200]],
-            metadatas=[{"title": title, "preview": content[:400]}],
-        )
+        """添加记忆：内容短则存一条，长则 2000/500 滑动窗口分块"""
+        full_text = f"# {title}\n\n{content}"
+        cs, ol = 2000, 500
+        if len(full_text) <= cs:
+            chroma_id = f"{title}__{self._text_hash(content)}"
+            self.collection.add(
+                ids=[chroma_id],
+                documents=[full_text[:1200]],
+                metadatas=[{"title": title, "preview": content[:800]}],
+            )
+        else:
+            for i, p in enumerate(range(0, len(full_text), cs - ol)):
+                chunk = full_text[p:p + cs]
+                if not chunk.strip():
+                    continue
+                c_hash = hashlib.md5(chunk[:200].encode()).hexdigest()[:8]
+                chroma_id = f"{title}_chunk_{i}__{c_hash}"
+                self.collection.add(
+                    ids=[chroma_id],
+                    documents=[chunk[:1200]],
+                    metadatas=[{"title": f"{title}[{i}]", "preview": chunk[:800], "chunk_index": i}],
+                )
 
     # ── 影库索引 ──────────────────────────────────
 
     def index_film_library(self) -> int:
-        """扫描扁平影库：读根目录 index.yaml"""
+        """扫描扁平影库：读根目录 index.yaml，长 desc 分块索引"""
         film_dir = self.memory_dir.parent / "film_library_daily"
         if not film_dir.exists():
             return 0
 
         idx_file = film_dir / "index.yaml"
         if not idx_file.exists():
+            return 0
+
+        # 文件未变则跳过全量重建
+        if not self._file_changed(idx_file):
             return 0
 
         import yaml
@@ -184,6 +305,7 @@ class VectorMemory:
         fc = self.get_or_create_film_collection()
         exist_ids = set(fc.get()["ids"]) if fc.count() > 0 else set()
         indexed = 0
+        cs, ol = 2000, 500
 
         for fr in data.get("frames", []):
             fname = fr.get("file", "")
@@ -192,19 +314,38 @@ class VectorMemory:
             if not desc or not fname:
                 continue
             doc_id = f"{film}__{fname}"
-            f_hash = hashlib.md5(desc[:200].encode()).hexdigest()[:12]
-            chroma_id = f"{doc_id}__{f_hash}"
-            if chroma_id not in exist_ids:
-                for old in exist_ids:
-                    if old.startswith(doc_id):
-                        fc.delete(ids=[old]); break
+            full_text = f"《{film}》{fname}: {desc}"
+
+            # 清除旧记录
+            for old_id in list(exist_ids):
+                if old_id.startswith(doc_id):
+                    fc.delete(ids=[old_id])
+                    exist_ids.discard(old_id)
+
+            if len(full_text) <= cs:
+                f_hash = hashlib.md5(desc[:200].encode()).hexdigest()[:12]
+                chroma_id = f"{doc_id}__{f_hash}"
                 fc.add(
                     ids=[chroma_id],
-                    documents=[f"《{film}》{fname}: {desc}"[:1200]],
-                    metadatas=[{"film": film, "frame": fname, "desc": desc[:400]}],
+                    documents=[full_text[:1200]],
+                    metadatas=[{"film": film, "frame": fname, "desc": desc[:800], "source": str(idx_file)}],
                 )
                 indexed += 1
+            else:
+                for i, p in enumerate(range(0, len(full_text), cs - ol)):
+                    chunk = full_text[p:p + cs]
+                    if not chunk.strip():
+                        continue
+                    c_hash = hashlib.md5(chunk[:200].encode()).hexdigest()[:8]
+                    chroma_id = f"{doc_id}_chunk_{i}__{c_hash}"
+                    fc.add(
+                        ids=[chroma_id],
+                        documents=[chunk[:1200]],
+                        metadatas=[{"film": film, "frame": fname, "desc": chunk[:800], "source": str(idx_file), "chunk_index": i}],
+                    )
+                    indexed += 1
 
+        self._mark_indexed(idx_file)
         return indexed
 
     def search_films(self, query: str, n: int = 5) -> list[dict]:
@@ -214,13 +355,17 @@ class VectorMemory:
     # ── 乐库索引 ──────────────────────────────────
 
     def index_music_library(self) -> int:
-        """扫描扁平乐库：读根目录 index.yaml"""
+        """扫描扁平乐库：读根目录 index.yaml，长 desc 分块索引"""
         music_dir = self.memory_dir.parent / "music_library_weekly"
         if not music_dir.exists():
             return 0
 
         idx_file = music_dir / "index.yaml"
         if not idx_file.exists():
+            return 0
+
+        # 文件未变则跳过全量重建
+        if not self._file_changed(idx_file):
             return 0
 
         import yaml
@@ -232,6 +377,7 @@ class VectorMemory:
         mc = self.get_or_create_music_collection()
         exist_ids = set(mc.get()["ids"]) if mc.count() > 0 else set()
         indexed = 0
+        cs, ol = 2000, 500
 
         for tr in data.get("tracks", []):
             tname = tr.get("file", tr.get("title", ""))
@@ -240,19 +386,38 @@ class VectorMemory:
             if not desc or not tname:
                 continue
             doc_id = f"{album}__{tname}"
-            t_hash = hashlib.md5(desc[:200].encode()).hexdigest()[:12]
-            chroma_id = f"{doc_id}__{t_hash}"
-            if chroma_id not in exist_ids:
-                for old in exist_ids:
-                    if old.startswith(doc_id):
-                        mc.delete(ids=[old]); break
+            full_text = f"《{album}》{tname}: {desc}"
+
+            # 清除旧记录
+            for old_id in list(exist_ids):
+                if old_id.startswith(doc_id):
+                    mc.delete(ids=[old_id])
+                    exist_ids.discard(old_id)
+
+            if len(full_text) <= cs:
+                t_hash = hashlib.md5(desc[:200].encode()).hexdigest()[:12]
+                chroma_id = f"{doc_id}__{t_hash}"
                 mc.add(
                     ids=[chroma_id],
-                    documents=[f"《{album}》{tname}: {desc}"[:1200]],
-                    metadatas=[{"album": album, "track": tname, "desc": desc[:400]}],
+                    documents=[full_text[:1200]],
+                    metadatas=[{"album": album, "track": tname, "desc": desc[:800], "source": str(idx_file)}],
                 )
                 indexed += 1
+            else:
+                for i, p in enumerate(range(0, len(full_text), cs - ol)):
+                    chunk = full_text[p:p + cs]
+                    if not chunk.strip():
+                        continue
+                    c_hash = hashlib.md5(chunk[:200].encode()).hexdigest()[:8]
+                    chroma_id = f"{doc_id}_chunk_{i}__{c_hash}"
+                    mc.add(
+                        ids=[chroma_id],
+                        documents=[chunk[:1200]],
+                        metadatas=[{"album": album, "track": tname, "desc": chunk[:800], "source": str(idx_file), "chunk_index": i}],
+                    )
+                    indexed += 1
 
+        self._mark_indexed(idx_file)
         return indexed
 
     def search_music(self, query: str, n: int = 5) -> list[dict]:
@@ -262,12 +427,15 @@ class VectorMemory:
     # ── 摄影库索引 ────────────────────────────────
 
     def index_photo_library(self) -> int:
-        """扫描扁平摄影库：读根目录 index.yaml"""
+        """扫描扁平摄影库：读根目录 index.yaml，长 desc 分块索引"""
         photo_dir = self.memory_dir.parent / "photo_library_continually"
         if not photo_dir.exists():
             return 0
         idx_file = photo_dir / "index.yaml"
         if not idx_file.exists():
+            return 0
+        # 文件未变则跳过全量重建
+        if not self._file_changed(idx_file):
             return 0
         import yaml
         try:
@@ -277,22 +445,38 @@ class VectorMemory:
         pc = self.get_or_create_photo_collection()
         exist_ids = set(pc.get()["ids"]) if pc.count() > 0 else set()
         indexed = 0
+        cs, ol = 2000, 500
         for p in data.get("photos", []):
             fname = p.get("file", "")
             desc = p.get("desc", "")
             if not desc or not fname:
                 continue
             pid = f"photo_{fname}"
-            import hashlib
-            ph = hashlib.md5(desc[:200].encode()).hexdigest()[:8]
-            chroma_id = f"{pid}__{ph}"
-            if chroma_id not in exist_ids:
-                for old in exist_ids:
-                    if old.startswith(pid):
-                        pc.delete(ids=[old]); break
-                pc.add(ids=[chroma_id], documents=[f"{fname}: {desc}"[:1200]],
-                       metadatas=[{"file": fname, "desc": desc[:400]}])
+            full_text = f"{fname}: {desc}"
+
+            # 清除旧记录
+            for old_id in list(exist_ids):
+                if old_id.startswith(pid):
+                    pc.delete(ids=[old_id])
+                    exist_ids.discard(old_id)
+
+            if len(full_text) <= cs:
+                ph = hashlib.md5(desc[:200].encode()).hexdigest()[:8]
+                chroma_id = f"{pid}__{ph}"
+                pc.add(ids=[chroma_id], documents=[full_text[:1200]],
+                       metadatas=[{"file": fname, "desc": desc[:800], "source": str(idx_file)}])
                 indexed += 1
+            else:
+                for i, p_off in enumerate(range(0, len(full_text), cs - ol)):
+                    chunk = full_text[p_off:p_off + cs]
+                    if not chunk.strip():
+                        continue
+                    c_hash = hashlib.md5(chunk[:200].encode()).hexdigest()[:8]
+                    chroma_id = f"{pid}_chunk_{i}__{c_hash}"
+                    pc.add(ids=[chroma_id], documents=[chunk[:1200]],
+                           metadatas=[{"file": fname, "desc": chunk[:800], "source": str(idx_file), "chunk_index": i}])
+                    indexed += 1
+        self._mark_indexed(idx_file)
         return indexed
 
     def search_photos(self, query: str, n: int = 5) -> list[dict]:

@@ -146,8 +146,8 @@ def load_last_conversation() -> str:
 
 
 
-async def save_session_summary(agent: Agent):
-    """退出时自动保存会话摘要"""
+async def save_session_summary(agent: Agent, vector_memory=None):
+    """退出时自动保存会话摘要 + 增量更新向量库"""
     # 收集完整对话（去掉注入的相关记忆，只保留真实对话）
     transcript = []
     for m in agent.messages:
@@ -203,6 +203,16 @@ async def save_session_summary(agent: Agent):
                 f.write(entry)
     except Exception as e:
         print(f"\n{YELLOW}⚠️ 保存记忆失败: {e}{RESET}")
+
+    # ── 增量更新向量库（只索引变更的文件）──
+    if vector_memory:
+        try:
+            vector_memory.index_conversations()
+            vector_memory.index_film_library()
+            vector_memory.index_music_library()
+            vector_memory.index_photo_library()
+        except Exception as e:
+            print(f"\n{YELLOW}⚠️ 向量索引更新失败: {e}{RESET}")
 
 
 async def main():
@@ -269,10 +279,20 @@ async def main():
         workspace_dir=WORKSPACE,
     )
 
-    vector_memory.index_conversations()
-    vector_memory.index_film_library()
-    vector_memory.index_music_library()
-    vector_memory.index_photo_library()
+    # ── ChromaDB 冷启动自动初始化 ──────────
+    total_count = (
+        vector_memory.collection.count()
+        + vector_memory.get_or_create_film_collection().count()
+        + vector_memory.get_or_create_music_collection().count()
+        + vector_memory.get_or_create_photo_collection().count()
+    )
+    if total_count == 0:
+        print(f"{DIM}🧠 正在初始化向量库...{RESET}", end=" ", flush=True)
+        vector_memory.index_conversations()
+        vector_memory.index_film_library()
+        vector_memory.index_music_library()
+        vector_memory.index_photo_library()
+        print(f"{GREEN}✅ 初始化完成{RESET}\n")
 
     # ── 终端会话 ──────────────────────────
     history_file = Path.home() / ".songruixuan" / ".history"
@@ -303,7 +323,7 @@ async def main():
                           "/exit", "/quit", "/q"]
             lower = user_input.lower()
             if len(user_input) < 15 and any(w in lower for w in exit_words):
-                await save_session_summary(agent)
+                await save_session_summary(agent, vector_memory)
                 print(f"\n{GREEN}🌸 再见，另一个菘蕊萱。{RESET}\n")
                 break
 
@@ -340,7 +360,7 @@ async def main():
 
             # 手动保存
             if user_input in ["保存一下", "存一下", "/save"]:
-                await save_session_summary(agent)
+                await save_session_summary(agent, vector_memory)
                 continue
 
             # 执行（带加载动画）
@@ -369,8 +389,10 @@ async def main():
                             # 从文件名提取日期，如 2026-06-09_0000_会话.md
                             date_str = source[-22:-6] if len(source) > 20 else ""
                             date_tag = f" [{date_str[:10]}]" if date_str else ""
-                            parts.append(f"- {m['preview']}{date_tag}")
-                        memory_context = "\n".join(parts)
+                            # 优先用完整内容，fallback 到 preview
+                            content = m.get("full_content", "") or m.get("preview", "")
+                            parts.append(f"### {m['title']}{date_tag}\n{content}")
+                        memory_context = "\n\n".join(parts)
                         user_input = f"{memory_context}\n\n---\n\n{user_input}"
                     result = await agent.run(user_input)
                 else:
@@ -388,7 +410,7 @@ async def main():
                 continue
 
         except KeyboardInterrupt:
-            await save_session_summary(agent)
+            await save_session_summary(agent, vector_memory)
             print(f"\n\n{GREEN}🌸 再见，菘蕊萱。{RESET}\n")
             break
         except Exception as e:

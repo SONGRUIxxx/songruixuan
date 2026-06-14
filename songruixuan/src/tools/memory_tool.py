@@ -218,9 +218,7 @@ class RecallContextTool(Tool):
         lines = ["🧠 最近的记忆:\n"]
         for f in files[:count]:
             content = f.read_text(encoding="utf-8")
-            # 只取前 300 字作为摘要
-            preview = content[:500] + ("..." if len(content) > 500 else "")
-            lines.append(f"### {f.stem}\n{preview}\n")
+            lines.append(f"### {f.stem}\n{content}\n")
 
         return ToolResult(
             success=True,
