@@ -4,7 +4,7 @@
 
 工具：
 	开发：
-		浏览器配置 vscode以及cc git anaconda 编译工具 
+		浏览器配置 vscode以及cc（github） git anaconda 编译工具 
 	创作：
 		菘蕊萱
 	展示：
