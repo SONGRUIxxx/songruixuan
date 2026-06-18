@@ -417,11 +417,23 @@ class VectorMemory:
         # 档位 2：创作模式 → 影库 + 乐库 + 电影笔记
         if self._should_search_creative(query):
             try:
-                results.extend(self.search_notes(query, n))
+                film_results = self.search_films(query, n)
+                results.extend(film_results)
+                # 跨库关联：搜到的镜头所属电影，顺带拉电影笔记
+                film_names = set()
+                for fr in film_results:
+                    name = fr.get("title", "").split("__")[0]
+                    if name:
+                        film_names.add(name)
+                for fname in film_names:
+                    try:
+                        results.extend(self.search_notes(fname, 2))
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
-                results.extend(self.search_films(query, n))
+                results.extend(self.search_notes(query, n))
             except Exception:
                 pass
             try:
@@ -436,13 +448,13 @@ class VectorMemory:
             except Exception:
                 pass
 
-        # 去重
-        seen_sources = set()
+        # 去重：source + title 组合（同一文件的不同内容单元各自保留）
+        seen = set()
         deduped = []
         for r in results:
-            src = r.get("source", r.get("title", ""))
-            if src not in seen_sources:
-                seen_sources.add(src)
+            key = (r.get("source", ""), r.get("title", ""))
+            if key not in seen:
+                seen.add(key)
                 deduped.append(r)
         return deduped[:n]
 
