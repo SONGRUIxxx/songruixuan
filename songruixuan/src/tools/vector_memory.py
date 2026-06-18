@@ -24,7 +24,7 @@ def _get_ef():
 class VectorMemory:
     """语义记忆索引 — 按内容单元检测，只索引新增部分"""
 
-    CS, OL = 2000, 500  # 分块大小 & 重叠
+    CS, OL = 800, 200  # 分块大小 & 重叠（800 字 ≈ BGE 512 token 上限）
 
     def __init__(self, memory_dir: str, chroma_dir: str):
         self.memory_dir = Path(memory_dir)
@@ -98,12 +98,12 @@ class VectorMemory:
             cid = f"{prefix}_chunk_0__{chunk_hash}"
             meta = dict(metadata)
             meta["chunk_index"] = 0
-            meta["preview"] = text[:1000]
+            meta["preview"] = text
             if source:
                 meta["source"] = source
             if title:
                 meta["title"] = title
-            collection.add(ids=[cid], documents=[text[:1200]], metadatas=[meta])
+            collection.add(ids=[cid], documents=[text], metadatas=[meta])
             indexed += 1
         else:
             for i, p in enumerate(range(0, len(text), step)):
@@ -114,12 +114,12 @@ class VectorMemory:
                 cid = f"{prefix}_chunk_{i}__{chunk_hash}"
                 meta = dict(metadata)
                 meta["chunk_index"] = i
-                meta["preview"] = chunk[:1000]
+                meta["preview"] = chunk
                 if source:
                     meta["source"] = source
                 if title:
                     meta["title"] = title
-                collection.add(ids=[cid], documents=[chunk[:1200]], metadatas=[meta])
+                collection.add(ids=[cid], documents=[chunk], metadatas=[meta])
                 indexed += 1
         return indexed
 
