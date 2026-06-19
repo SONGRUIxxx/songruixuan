@@ -33,7 +33,7 @@ from src.tools.doc_reader import ReadDocumentTool
 from src.schema import Message
 from agent import Agent
 
-WORKSPACE = str(ROOT / "Workspace")
+WORKSPACE = r"D:\Workspace"
 MEMORY_DIR = str(ROOT / "memory" / "conversations")
 FILM_DAILY_DIR = str(ROOT / "memory" / "film_library_daily")
 MUSIC_WEEKLY_DIR = str(ROOT / "memory" / "music_library_weekly")
@@ -114,7 +114,7 @@ def build_system_prompt() -> str:
 ## 规则
 
 涉及文件写入、修改、删除的操作，先确认再执行。
-回答创作或灵感问题时，把影库已有素材和通用知识自然地揉在一起。
+回答创作或灵感问题时，系统已自动搜索影库相关内容并注入上下文，请自然地融合这些素材。
 用户说「学习某电影」时，调用 film_create 建库并立刻搜索填写「内容大纲」部分。绝对不要填写「深度解析」——那是留给用户粘贴影评原文的地方。
 用户说「深度分析某电影」时，调用 film_analyze 读取「深度解析」下用户已粘贴的影评原文，将其糅合成完整分析。如果「深度解析」下已有糅合好的分析，不要再动。
 用户说「导入镜头」时，调用 film_import。
@@ -157,7 +157,7 @@ async def save_session_summary(agent: Agent, vector_memory=None):
             continue
         content = m.content
         if "## 🧠 相关记忆" in content:
-            parts = content.split("---\n\n", 1)
+            parts = content.split("🧠---MEMORY_END---🧠\n\n", 1)
             content = parts[1] if len(parts) > 1 else content
         prefix = "🌸" if m.role == "user" else "🤖"
         transcript.append(f"**{prefix}**: {content}")
@@ -404,7 +404,7 @@ async def main():
             try:
                 if not any(w in user_input for w in continue_words):
                     # 语义搜索相关记忆，注入上下文
-                    memories = vector_memory.search_all(user_input, n=5)
+                    memories = vector_memory.search_all(user_input, n=10)
                     if memories:
                         parts = ["## 🧠 相关记忆（优先最近）", ""]
                         for m in memories:
@@ -416,7 +416,7 @@ async def main():
                             content = m.get("full_content", "") or m.get("preview", "")
                             parts.append(f"### {m['title']}{date_tag}\n{content}")
                         memory_context = "\n\n".join(parts)
-                        user_input = f"{memory_context}\n\n---\n\n{user_input}"
+                        user_input = f"{memory_context}\n\n🧠---MEMORY_END---🧠\n\n{user_input}"
                     result = await agent.run(user_input)
                 else:
                     result = await agent.run()

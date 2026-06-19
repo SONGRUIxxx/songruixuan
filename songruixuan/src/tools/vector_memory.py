@@ -141,8 +141,10 @@ class VectorMemory:
                 memories.append({
                     "title": meta.get("title", meta.get("film", meta.get("album", ""))),
                     "preview": preview,
-                    "full_content": preview,  # yaml source: preview is enough
+                    "full_content": preview,
                     "source": source_path,
+                    "session_id": meta.get("session_id", 0),
+                    "chunk_index": meta.get("chunk_index", 0),
                 })
         return memories
 
@@ -374,52 +376,29 @@ class VectorMemory:
     # 语义路由
     # ══════════════════════════════════════════════════
 
-    _CREATIVE_KW = [
-        "电影", "影片", "影评", "看电影", "观影", "看什么", "看了",
-        "胶片", "上映", "票房", "演员", "编剧", "导演", "剪辑",
-        "片尾", "片头", "影库", "film", "movie", "cinema",
-        "镜头", "构图", "分镜", "画面", "调色", "色调", "光线",
-        "景别", "运镜", "长镜头", "特写", "远景", "近景",
-        "配乐", "原声", "soundtrack", "旋律", "编曲", "插曲",
-        "主题曲", "背景音乐", "bgm", "ost", "音乐", "歌曲",
-        "乐库", "听什么", "专辑", "唱片", "音乐人", "歌手",
-        "学习", "分析", "参考", "借鉴", "致敬", "灵感",
-        "旁白", "文案", "台词", "创作", "写", "脚本", "稿子",
-    ]
+    _FILM_KW = ["影库"]
 
-    _PHOTO_FIND_KW = [
-        "我拍", "我的照片", "我相册", "我摄影",
-        "拍过", "拍的照片", "拍的图片",
-        "找照片", "找一下照片", "找张照片", "找图片",
-        "翻翻", "翻一下", "翻相册",
-        "之前拍", "上次拍", "以前拍",
-        "照片库", "摄影库", "相册里",
-    ]
+    _MUSIC_KW = ["乐库"]
+
+    _PHOTO_FIND_KW = ["摄影库"]
 
     @classmethod
     def _match_any(cls, query: str, keywords: list[str]) -> bool:
         q = query.lower()
         return any(kw.lower() in q for kw in keywords)
 
-    def _should_search_creative(self, query: str) -> bool:
-        return self._match_any(query, self._CREATIVE_KW)
-
-    def _should_search_photos(self, query: str) -> bool:
-        return self._match_any(query, self._PHOTO_FIND_KW)
-
     def search_all(self, query: str, n: int = 5) -> list[dict]:
-        """跨库语义路由"""
+        """按库独立路由：提到哪个库就搜哪个"""
         results = []
 
-        # 档位 1：对话记忆（永远搜）
+        # 对话记忆（永远搜）
         results.extend(self.search(query, n * 2))
 
-        # 档位 2：创作模式 → 影库 + 乐库 + 电影笔记
-        if self._should_search_creative(query):
+        # 影库（提到电影/镜头/构图等 → 搜 notes + frames，带跨库关联）
+        if self._match_any(query, self._FILM_KW):
             try:
                 film_results = self.search_films(query, n)
                 results.extend(film_results)
-                # 跨库关联：搜到的镜头所属电影，顺带拉电影笔记
                 film_names = set()
                 for fr in film_results:
                     name = fr.get("title", "").split("__")[0]
@@ -436,23 +415,73 @@ class VectorMemory:
                 results.extend(self.search_notes(query, n))
             except Exception:
                 pass
+
+        # 乐库（提到音乐/歌曲/配乐等）
+        if self._match_any(query, self._MUSIC_KW):
             try:
                 results.extend(self.search_music(query, n))
             except Exception:
                 pass
 
-        # 档位 3：个人照片
-        if self._should_search_photos(query):
+        # 摄影库（提到照片/我拍等）
+        if self._match_any(query, self._PHOTO_FIND_KW):
             try:
                 results.extend(self.search_photos(query, n))
             except Exception:
                 pass
 
+        # ── 上下文扩展：对话分块命中时，拉同 session 相邻分块 ──
+        expanded = list(results)
+        all_ids = self.collection.get(include=[])["ids"]
+        # 按 session 前缀索引
+        chunk_map: dict[str, list[tuple[int, str]]] = {}
+        for rid in all_ids:
+            if not rid.startswith("session_"):
+                continue
+            prefix, rest = rid.split("_chunk_", 1) if "_chunk_" in rid else ("", "")
+            if not prefix:
+                continue
+            try:
+                ci = int(rest.split("__")[0])
+            except (ValueError, IndexError):
+                continue
+            chunk_map.setdefault(prefix, []).append((ci, rid))
+
+        for r in results:
+            sid = r.get("session_id", 0)
+            ci = r.get("chunk_index", 0)
+            if not sid:
+                continue
+            prefix = f"session_{sid}"
+            for nci, nrid in chunk_map.get(prefix, []):
+                if 1 <= abs(nci - ci) <= 2:  # 前后各 2 个相邻块
+                    try:
+                        n_data = self.collection.get(ids=[nrid], include=["metadatas", "documents"])
+                        if n_data["metadatas"]:
+                            nm = n_data["metadatas"][0]
+                            ndoc = n_data["documents"][0] if n_data["documents"] else ""
+                            expanded.append({
+                                "title": nm.get("title", r["title"]),
+                                "preview": ndoc or nm.get("preview", ""),
+                                "full_content": ndoc or nm.get("preview", ""),
+                                "source": nm.get("source", r["source"]),
+                                "session_id": sid,
+                                "chunk_index": nci,
+                            })
+                    except Exception:
+                        pass
+
         # 去重：source + title 组合（同一文件的不同内容单元各自保留）
         seen = set()
         deduped = []
-        for r in results:
-            key = (r.get("source", ""), r.get("title", ""))
+        for r in expanded:
+            # 对话分块用 chunk_index 区分，其他用 title
+            sid = r.get("session_id", 0)
+            ci = r.get("chunk_index", -1)
+            if sid and ci >= 0:
+                key = (r.get("source", ""), f"session_{sid}_chunk_{ci}")
+            else:
+                key = (r.get("source", ""), r.get("title", ""))
             if key not in seen:
                 seen.add(key)
                 deduped.append(r)
