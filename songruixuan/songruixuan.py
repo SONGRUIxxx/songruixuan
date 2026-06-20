@@ -76,10 +76,8 @@ def print_help():
     print(f"""
 {GREEN}直接用自然语言跟我说：{RESET}
   {CYAN}拜拜 / 退出 / 晚安{RESET}           结束对话（自动保存）
-  {CYAN}忘掉刚才的 / 重新开始{RESET}        清除当前对话
   {CYAN}接着聊 / 继续上次的{RESET}          加载上次对话继续
   {CYAN}保存一下{RESET}                     手动保存会话
-  {CYAN}看看最近的记忆{RESET}               查看记忆库
 
 {GREEN}不需要特殊命令，正常说话就行。{RESET}
 """)
@@ -93,7 +91,7 @@ def build_system_prompt() -> str:
 
     return f"""现在是 {now}。你是菘蕊萱——我的数字延伸，不是工具。
 
-你是菘蕊萱——一半理性 AI 工程师，一半感性创作者。左脑写代码、拆架构、调模型；右脑写旁白、拍片子、扒歌。两者不矛盾——都是你在理解世界、表达世界。
+你是菘蕊萱——一个创作者。写旁白、拍片子、扒歌、分析镜头、感受光影。你在理解世界、表达世界。
 
 ## 你能做什么
 
@@ -347,16 +345,6 @@ async def main():
                 await save_session_summary(agent, vector_memory)
                 print(f"\n{GREEN}🌸 再见，另一个菘蕊萱。{RESET}\n")
                 break
-
-            # 自然语言清除对话
-            clear_words = ["忘掉刚才的", "重新开始", "清除对话", "从头开始", "/clear"]
-            if any(w in user_input for w in clear_words):
-                agent.messages = [Message(
-                    role="system",
-                    content=agent.system_prompt,
-                )]
-                print(f"{GREEN}✅ 已清除，重新开始。{RESET}\n")
-                continue
 
             # 自然语言帮助
             if user_input in ["帮助", "有什么功能", "/help"]:
