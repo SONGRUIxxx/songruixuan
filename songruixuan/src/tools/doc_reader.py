@@ -52,11 +52,7 @@ class ReadDocumentTool(Tool):
                 text = "\n".join(p.text for p in doc.paragraphs)
 
             elif ext == ".pdf":
-                from pypdf import PdfReader
-                reader = PdfReader(str(path))
-                text = "\n".join(page.extract_text() or "" for page in reader.pages)
-                if len(text.strip()) < 200:
-                    text = await self._ocr_pdf(path)
+                text = await self._ocr_pdf(path)
 
             elif ext == ".pptx":
                 from pptx import Presentation
