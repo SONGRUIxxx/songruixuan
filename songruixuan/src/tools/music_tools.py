@@ -28,7 +28,7 @@ class MusicImportTool(Tool):
     def description(self) -> str:
         return (
             "【必须调用此工具】导入乐库文件（音频或封面图）。"
-            "扫描 music_library_weekly 目录，继续编号，对封面图片用 vision 分析，写入 index.yaml，索引到 ChromaDB。"
+            "扫描 music_library_daily 目录，继续编号，对封面图片用 vision 分析，写入 index.yaml，索引到 ChromaDB。"
             "用户说「导入音乐」「导入专辑」「导入封面」时调用。"
         )
 

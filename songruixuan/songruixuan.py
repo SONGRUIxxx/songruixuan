@@ -36,7 +36,7 @@ from agent import Agent
 WORKSPACE = r"D:\Workspace"
 MEMORY_DIR = str(ROOT / "memory" / "conversations")
 FILM_DAILY_DIR = str(ROOT / "memory" / "film_library_daily")
-MUSIC_WEEKLY_DIR = str(ROOT / "memory" / "music_library_weekly")
+MUSIC_DAILY_DIR = str(ROOT / "memory" / "music_library_daily")
 PHOTO_DIR = str(ROOT / "memory" / "photo_library_continually")
 
 
@@ -286,7 +286,7 @@ async def main():
                 vision_tool=vision_tool,
             ),
             MusicImportTool(
-                music_dir=MUSIC_WEEKLY_DIR,
+                music_dir=MUSIC_DAILY_DIR,
                 vector_memory=vector_memory,
                 vision_tool=vision_tool,
             ),

@@ -55,7 +55,7 @@ class VectorMemory:
     def get_or_create_music_collection(self):
         if self._music_collection is None:
             self._music_collection = self.client.get_or_create_collection(
-                name="music_library_weekly",
+                name="music_library_daily",
                 embedding_function=_get_ef(),
                 metadata={"hnsw:space": "cosine"},
             )
@@ -330,7 +330,7 @@ class VectorMemory:
     # ── 乐库索引 ──────────────────────────────────
 
     def index_music_library(self) -> int:
-        idx_file = self.memory_dir.parent / "music_library_weekly" / "index.yaml"
+        idx_file = self.memory_dir.parent / "music_library_daily" / "index.yaml"
         if not idx_file.exists():
             return 0
 
