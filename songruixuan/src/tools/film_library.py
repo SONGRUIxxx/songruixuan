@@ -72,7 +72,7 @@ class FilmCreateTool(Tool):
 
 
 class FilmAnalyzeTool(Tool):
-    """读 notes.yaml 中影评 → 糅合正反面"""
+    """读 notes.yaml 中影评/观影笔记 → 糅合正反面"""
 
     def __init__(self, film_library_dir: str):
         self.base = Path(film_library_dir)
@@ -84,7 +84,7 @@ class FilmAnalyzeTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "读取 notes.yaml 中某部电影的笔记（含深度解析）。"
+            "读取 notes.yaml 中某部电影的笔记（含深度解析——影评原文或个人观影笔记）。"
             "用于检索影库中的电影分析、参考已有笔记。说「深度分析某电影」「参考影库」「看某电影的笔记」时调用。"
         )
 
@@ -120,7 +120,7 @@ class FilmAnalyzeTool(Tool):
             success=True,
             content=(
                 f"📄 《{film_name}》当前笔记:\n\n{film_content}\n\n"
-                "---\n请将「深度解析」下的影评原文糅合成一篇完整分析"
+                "---\n请将「深度解析」下的影评原文与观影笔记糅合成一篇完整分析"
                 "（正面+反面，语言连贯），替换掉深度解析部分。"
             ),
         )
