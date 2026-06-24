@@ -157,3 +157,115 @@ class MusicImportTool(Tool):
             success=True,
             content=f"OK {processed} analyzed, {indexed} indexed"
         )
+
+
+class MusicCreateTool(Tool):
+    """在 notes.yaml 追加新歌曲的曲目信息"""
+
+    def __init__(self, music_dir: str):
+        self.base = Path(music_dir)
+
+    @property
+    def name(self) -> str:
+        return "music_create"
+
+    @property
+    def description(self) -> str:
+        return (
+            "在乐库 notes.yaml 中追加一首新歌曲的笔记。说「学习某歌曲」「学习某专辑」时调用。"
+        )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "歌曲/专辑名称"}},
+            "required": ["name"],
+        }
+
+    async def execute(self, name: str) -> ToolResult:
+        yaml_path = self.base / "notes.yaml"
+        self.base.mkdir(parents=True, exist_ok=True)
+
+        data = {}
+        if yaml_path.exists():
+            try:
+                data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                pass
+
+        tracks = data.get("tracks", [])
+
+        for t in tracks:
+            if t.get("name") == name:
+                return ToolResult(success=False, error=f"「{name}」已在 notes.yaml 中")
+
+        tracks.append({
+            "name": name,
+            "content": "## 曲目信息\n\n\n## 听歌笔记\n\n\n",
+        })
+
+        yaml_path.write_text(
+            yaml.dump({"tracks": tracks}, allow_unicode=True, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        return ToolResult(
+            success=True,
+            content=f"🎵 「{name}」已追加到 notes.yaml\n请用 web_search 搜索该歌曲/专辑，填写曲目信息。"
+        )
+
+
+class MusicAnalyzeTool(Tool):
+    """读 notes.yaml 中听歌笔记 → 糅合分析"""
+
+    def __init__(self, music_dir: str):
+        self.base = Path(music_dir)
+
+    @property
+    def name(self) -> str:
+        return "music_analyze"
+
+    @property
+    def description(self) -> str:
+        return (
+            "读取 notes.yaml 中某首歌曲的笔记（含听歌笔记）。"
+            "用于检索乐库中的音乐分析、参考已有笔记。说「深度分析某歌曲」「参考乐库」「看某歌曲的笔记」时调用。"
+        )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"track_name": {"type": "string", "description": "歌曲/专辑名称"}},
+            "required": ["track_name"],
+        }
+
+    async def execute(self, track_name: str) -> ToolResult:
+        yaml_path = self.base / "notes.yaml"
+        if not yaml_path.exists():
+            return ToolResult(success=False, error="notes.yaml 不存在")
+
+        try:
+            data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return ToolResult(success=False, error="notes.yaml 读取失败")
+
+        tracks = data.get("tracks", [])
+        track_content = ""
+        for t in tracks:
+            if t.get("name") == track_name:
+                track_content = t.get("content", "")
+                break
+
+        if not track_content:
+            return ToolResult(success=False, error=f"notes.yaml 中没有「{track_name}」")
+
+        return ToolResult(
+            success=True,
+            content=(
+                f"🎵 《{track_name}》当前笔记:\n\n{track_content}\n\n"
+                "---\n请将「听歌笔记」下的内容糅合成一篇完整分析"
+                "（正面+反面，语言连贯），替换掉听歌笔记部分。"
+            ),
+        )

@@ -213,6 +213,36 @@ class VectorMemory:
             )
         return indexed
 
+    # ── 音乐笔记索引 ──────────────────────────────
+
+    def index_music_notes(self) -> int:
+        """读 music_library_daily/notes.yaml，按曲目名检测，新增则分块嵌入"""
+        yp = self.memory_dir.parent / "music_library_daily" / "notes.yaml"
+        if not yp.exists():
+            return 0
+
+        try:
+            data = yaml.safe_load(yp.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return 0
+
+        indexed = 0
+        source = str(yp)
+        for track in data.get("tracks", []):
+            name = track.get("name", "")
+            content = track.get("content", "")
+            if not name or not content.strip():
+                continue
+            prefix = f"music_note_{name}"
+            if self._chunk_exists(self.collection, prefix):
+                continue
+            indexed += self._index_chunks(
+                self.collection, content, prefix=prefix,
+                metadata={"music": name, "type": "music_note"},
+                source=source, title=f"《{name}》笔记",
+            )
+        return indexed
+
     def search_notes(self, query: str, n: int = 5) -> list[dict]:
         """搜电影笔记（存在 conversations collection 里）"""
         # 过滤只返回 type=film_note 的结果
@@ -231,6 +261,30 @@ class VectorMemory:
                     "preview": meta.get("preview", ""),
                     "full_content": meta.get("preview", ""),
                     "source": meta.get("source", ""),
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "group_id": f"film_note_{meta.get('film', '')}",
+                })
+        return memories[:n]
+
+    def search_music_notes(self, query: str, n: int = 5) -> list[dict]:
+        """搜音乐笔记（存在 conversations collection 里）"""
+        if self.collection.count() == 0:
+            return []
+        results = self.collection.query(
+            query_texts=[query],
+            n_results=min(n * 3, self.collection.count()),
+            where={"type": "music_note"},
+        )
+        memories = []
+        if results["metadatas"] and results["metadatas"][0]:
+            for meta in results["metadatas"][0]:
+                memories.append({
+                    "title": meta.get("title", meta.get("music", "")),
+                    "preview": meta.get("preview", ""),
+                    "full_content": meta.get("preview", ""),
+                    "source": meta.get("source", ""),
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "group_id": f"music_note_{meta.get('music', '')}",
                 })
         return memories[:n]
 
@@ -242,7 +296,7 @@ class VectorMemory:
             results = self.collection.query(
                 query_texts=[query],
                 n_results=min(n * 2, self.collection.count()),
-                where={"type": {"$ne": "film_note"}},
+                where={"$and": [{"type": {"$ne": "film_note"}}, {"type": {"$ne": "music_note"}}]},
             )
         except Exception:
             # 旧 ChromaDB 可能不支持 $ne 过滤，fallback
@@ -251,11 +305,15 @@ class VectorMemory:
         memories = []
         if results["metadatas"] and results["metadatas"][0]:
             for meta in results["metadatas"][0]:
+                sid = meta.get("session_id", 0)
                 memories.append({
                     "title": meta.get("title", ""),
                     "preview": meta.get("preview", ""),
                     "full_content": meta.get("preview", ""),
                     "source": meta.get("source", ""),
+                    "session_id": sid,
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "group_id": f"session_{sid}" if sid else "",
                 })
         return memories[:n]
 
@@ -391,70 +449,112 @@ class VectorMemory:
         """按库独立路由：提到哪个库就搜哪个"""
         results = []
 
-        # 对话记忆（永远搜）
-        results.extend(self.search(query, n * 2))
+        # ── 独占路由：提到库则只搜库，没提才搜对话 ──
+        has_photo = self._match_any(query, self._PHOTO_FIND_KW)
+        has_music = self._match_any(query, self._MUSIC_KW)
+        # 摄影库包含"影库"子串 → 互斥，摄影库优先
+        has_film = self._match_any(query, self._FILM_KW) and not has_photo
+        any_lib = has_film or has_music or has_photo
 
-        # 影库（提到电影/镜头/构图等 → 搜 notes + frames，带跨库关联）
-        if self._match_any(query, self._FILM_KW):
+        # ── 分池配额：各子库内去重后按配额取，避免长文本挤压短条目 ──
+        HALF = max(n // 2, 5)  # 每池配额
+
+        def _dedup_pool(items: list[dict], limit: int) -> list[dict]:
+            """池内按分块粒度去重，取前 limit 条"""
+            s = set()
+            out = []
+            for r in items:
+                sid = r.get("session_id", 0)
+                ci = r.get("chunk_index", -1)
+                gid = r.get("group_id", "")
+                if (sid and ci >= 0) or (gid and ci >= 0):
+                    tag = f"session_{sid}" if sid else gid
+                    key = (r.get("source", ""), f"{tag}_chunk_{ci}")
+                else:
+                    key = (r.get("source", ""), r.get("title", ""))
+                if key not in s:
+                    s.add(key)
+                    out.append(r)
+            return out[:limit]
+
+        if not any_lib:
+            results = _dedup_pool(self.search(query, n * 2), 10)
+
+        if has_film:
+            frame_pool = []
+            note_pool = []
+            cross_notes = []
             try:
-                film_results = self.search_films(query, n)
-                results.extend(film_results)
+                frame_pool = self.search_films(query, n)
                 film_names = set()
-                for fr in film_results:
+                for fr in frame_pool:
                     name = fr.get("title", "").split("__")[0]
                     if name:
                         film_names.add(name)
                 for fname in film_names:
                     try:
-                        results.extend(self.search_notes(fname, 2))
+                        cross_notes.extend(self.search_notes(fname, 2))
                     except Exception:
                         pass
             except Exception:
                 pass
             try:
-                results.extend(self.search_notes(query, n))
+                note_pool = self.search_notes(query, n)
             except Exception:
                 pass
+            # 配额：帧 5 + 笔记 5，交叉关联笔记额外追加
+            results = _dedup_pool(frame_pool, HALF) + _dedup_pool(note_pool + cross_notes, HALF)
 
-        # 乐库（提到音乐/歌曲/配乐等）
-        if self._match_any(query, self._MUSIC_KW):
+        if has_music:
+            track_pool = []
+            note_pool = []
             try:
-                results.extend(self.search_music(query, n))
+                track_pool = self.search_music(query, n)
             except Exception:
                 pass
-
-        # 摄影库（提到照片/我拍等）
-        if self._match_any(query, self._PHOTO_FIND_KW):
             try:
-                results.extend(self.search_photos(query, n))
+                note_pool = self.search_music_notes(query, n)
             except Exception:
                 pass
+            results = _dedup_pool(track_pool, HALF) + _dedup_pool(note_pool, HALF)
 
-        # ── 上下文扩展：对话分块命中时，拉同 session 相邻分块 ──
-        expanded = list(results)
+        if has_photo:
+            results = _dedup_pool(self.search_photos(query, n), 10)
+
+        top = results[:10]
+
+        # ── 第二步：对精选的 10 条做上下文扩展（±2 相邻分块）──
+        expanded = list(top)
+
+        # 构建所有 _chunk_ 前缀的分块索引（对话 + 影库笔记 + 乐库笔记）
         all_ids = self.collection.get(include=[])["ids"]
-        # 按 session 前缀索引
         chunk_map: dict[str, list[tuple[int, str]]] = {}
         for rid in all_ids:
-            if not rid.startswith("session_"):
+            if "_chunk_" not in rid:
                 continue
-            prefix, rest = rid.split("_chunk_", 1) if "_chunk_" in rid else ("", "")
-            if not prefix:
-                continue
+            prefix, rest = rid.split("_chunk_", 1)
             try:
                 ci = int(rest.split("__")[0])
             except (ValueError, IndexError):
                 continue
             chunk_map.setdefault(prefix, []).append((ci, rid))
 
-        for r in results:
-            sid = r.get("session_id", 0)
-            ci = r.get("chunk_index", 0)
-            if not sid:
+        for r in top:
+            ci = r.get("chunk_index", -1)
+            if ci < 0:
                 continue
-            prefix = f"session_{sid}"
+            prefix = None
+            sid = r.get("session_id", 0)
+            gid = r.get("group_id", "")
+            if sid:
+                prefix = f"session_{sid}"
+            elif gid:
+                prefix = gid
+            if not prefix:
+                continue
+
             for nci, nrid in chunk_map.get(prefix, []):
-                if 1 <= abs(nci - ci) <= 2:  # 前后各 2 个相邻块
+                if 1 <= abs(nci - ci) <= 2:  # ±2
                     try:
                         n_data = self.collection.get(ids=[nrid], include=["metadatas", "documents"])
                         if n_data["metadatas"]:
@@ -465,27 +565,29 @@ class VectorMemory:
                                 "preview": ndoc or nm.get("preview", ""),
                                 "full_content": ndoc or nm.get("preview", ""),
                                 "source": nm.get("source", r["source"]),
-                                "session_id": sid,
+                                "session_id": nm.get("session_id", sid),
                                 "chunk_index": nci,
+                                "group_id": gid,
                             })
                     except Exception:
                         pass
 
-        # 去重：source + title 组合（同一文件的不同内容单元各自保留）
-        seen = set()
-        deduped = []
+        # ── 第三步：最终去重（按分块粒度），不截断，全部返回 ──
+        seen2 = set()
+        final = []
         for r in expanded:
-            # 对话分块用 chunk_index 区分，其他用 title
             sid = r.get("session_id", 0)
             ci = r.get("chunk_index", -1)
-            if sid and ci >= 0:
-                key = (r.get("source", ""), f"session_{sid}_chunk_{ci}")
+            gid = r.get("group_id", "")
+            if (sid and ci >= 0) or (gid and ci >= 0):
+                tag = f"session_{sid}" if sid else gid
+                key = (r.get("source", ""), f"{tag}_chunk_{ci}")
             else:
                 key = (r.get("source", ""), r.get("title", ""))
-            if key not in seen:
-                seen.add(key)
-                deduped.append(r)
-        return deduped[:n]
+            if key not in seen2:
+                seen2.add(key)
+                final.append(r)
+        return final
 
     @property
     def count(self) -> int:

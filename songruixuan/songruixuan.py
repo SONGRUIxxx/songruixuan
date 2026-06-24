@@ -24,7 +24,7 @@ from src.tools.bash_tool import BashTool
 from src.tools.memory_tool import ReadMemoryTool, RecallContextTool, SaveMemoryTool
 from src.tools.vector_memory import VectorMemory
 from src.tools.film_library import FilmCreateTool, FilmAnalyzeTool, FilmImportTool
-from src.tools.music_tools import MusicImportTool
+from src.tools.music_tools import MusicImportTool, MusicCreateTool, MusicAnalyzeTool
 from src.tools.photo_tools import PhotoImportTool
 from src.tools.search_tool import ImageSearchTool, WebSearchTool
 from src.tools.web_tools import WebFetchTool
@@ -118,14 +118,18 @@ def build_system_prompt() -> str:
 用户说「导入镜头」时，调用 film_import。
 用户说「导入照片」「处理照片」「整理照片」「处理我的照片」「生成索引」时，调用 photo_import。
 用户说「导入音乐」「导入专辑」「导入封面」「整理乐库」时，调用 music_import。
+用户说「学习某歌曲」「学习某专辑」时，调用 music_create 建库并立刻搜索填写「曲目信息」部分。绝对不要填写「听歌笔记」——那是留给用户撰写个人听歌笔记的地方。
+用户说「深度分析某歌曲」时，调用 music_analyze 读取「听歌笔记」下用户已写的内容，将其糅合成完整分析。如果「听歌笔记」下已有糅合好的分析，不要再动。
 不要自己写脚本替代已有工具——工具已实现完整功能，直接调用即可。
 
 ## 记忆库访问
 
 每次对话开头已自动注入「🧠 相关记忆」——请先阅读它，基于记忆回答，不要忽略。
 - 「回忆之前聊过什么」「搜索记忆中的XX」→ recall_context 或 read_memory
-- 「参考影库」「影库里有什么」「看某电影的笔记」→ film_analyze
-- 「找照片」「我拍过的照片」→ photo_import 已有索引，直接检索即可
+- 用户提到「影库」时才会检索影库内容（镜头帧 + 笔记，系统自动平衡）
+- 用户提到「乐库」时才会检索乐库内容（曲目 + 笔记，系统自动平衡）
+- 用户提到「摄影库」时才会检索照片索引
+- 用户未提以上关键词时，只搜索对话记忆，不碰任何库
 - 永远不要用 read_file 或 list_dir 去翻 memory/ 目录——记忆工具有专门的检索入口"""
 
 
@@ -217,6 +221,7 @@ async def save_session_summary(agent: Agent, vector_memory=None):
         try:
             vector_memory.index_conversations()
             vector_memory.index_notes()
+            vector_memory.index_music_notes()
             vector_memory.index_film_library()
             vector_memory.index_music_library()
             vector_memory.index_photo_library()
@@ -290,6 +295,8 @@ async def main():
                 vector_memory=vector_memory,
                 vision_tool=vision_tool,
             ),
+            MusicCreateTool(music_dir=MUSIC_DAILY_DIR),
+            MusicAnalyzeTool(music_dir=MUSIC_DAILY_DIR),
             PhotoImportTool(
                 photo_dir=PHOTO_DIR,
                 vector_memory=vector_memory,
@@ -305,8 +312,9 @@ async def main():
     n_notes = vector_memory.index_notes()
     n_film = vector_memory.index_film_library()
     n_music = vector_memory.index_music_library()
+    n_music_notes = vector_memory.index_music_notes()
     n_photo = vector_memory.index_photo_library()
-    total_new = n_conv + n_notes + n_film + n_music + n_photo
+    total_new = n_conv + n_notes + n_film + n_music + n_music_notes + n_photo
     if total_new > 0:
         print(f"{GREEN}✅ 已同步{RESET}\n")
     else:
@@ -392,7 +400,7 @@ async def main():
             try:
                 if not any(w in user_input for w in continue_words):
                     # 语义搜索相关记忆，注入上下文
-                    memories = vector_memory.search_all(user_input, n=10)
+                    memories = vector_memory.search_all(user_input, n=20)
                     if memories:
                         parts = ["## 🧠 相关记忆（优先最近）", ""]
                         for m in memories:
