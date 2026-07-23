@@ -1,4 +1,4 @@
-"""📸 摄影库 — 扁平大库，无限编号"""
+"""🖼️ 图库（镜头库）— 扁平大库，无限编号"""
 
 import os
 import yaml
@@ -26,7 +26,7 @@ class PhotoImportTool(Tool):
 
     @property
     def description(self) -> str:
-        return "【必须调用此工具】用户说「处理照片」「生成索引」时你必须调用 photo_import，不要自己逐张调 vision。工具会自动扫描目录、分析每张、写入 index.yaml。"
+        return "【必须调用此工具】用户说「添加图片」「导入镜头」「整理图库」时调用 photo_import。上传图片 → 写描述/感受 → AI 辅助分析 → 入库。"
 
     @property
     def parameters(self) -> dict:

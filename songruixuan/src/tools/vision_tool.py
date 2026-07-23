@@ -1,4 +1,4 @@
-"""👁️ 视觉理解 — 阿里通义千问 VL"""
+"""👁️ 视觉理解 — 火山引擎豆包 Seed Vision"""
 
 import base64
 from pathlib import Path
@@ -9,11 +9,12 @@ from src.tool_base import Tool, ToolResult
 
 
 class VisionTool(Tool):
-    """阿里通义千问 VL 视觉理解"""
+    """豆包 Seed Vision 视觉理解"""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str = "doubao-seed-2-1-pro-260628"):
         self.api_key = api_key
-        self.endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        self.model = model
+        self.endpoint = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 
     @property
     def name(self) -> str:
@@ -50,7 +51,7 @@ class VisionTool(Tool):
                 resp = await client.post(
                     self.endpoint,
                     json={
-                        "model": "qwen-vl-plus",
+                        "model": self.model,
                         "messages": [{
                             "role": "user",
                             "content": [

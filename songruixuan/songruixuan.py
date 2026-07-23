@@ -22,7 +22,7 @@ from src.llm_client import LLMClient
 from src.tools.file_tools import DeleteTool, ListDirTool, MoveTool, ReadTool, WriteTool
 from src.tools.bash_tool import BashTool
 from src.tools.memory_tool import ReadMemoryTool, RecallContextTool, SaveMemoryTool
-from src.tools.vector_memory import VectorMemory
+from src.tools.vector_memory import VectorMemory, configure_cloud_embedding
 from src.tools.film_library import FilmCreateTool, FilmAnalyzeTool, FilmImportTool
 from src.tools.music_tools import MusicImportTool, MusicCreateTool, MusicAnalyzeTool
 from src.tools.photo_tools import PhotoImportTool
@@ -37,14 +37,14 @@ WORKSPACE = r"D:\Workspace"
 MEMORY_DIR = str(ROOT / "memory" / "conversations")
 FILM_DAILY_DIR = str(ROOT / "memory" / "film_library_daily")
 MUSIC_DAILY_DIR = str(ROOT / "memory" / "music_library_daily")
-PHOTO_DIR = str(ROOT / "memory" / "photo_library_continually")
+LENS_DIR = str(ROOT / "memory" / "lens_library")
 
 
 # ── API Keys（从 config/config.yaml 读取，不上传 Git）───
 import yaml
 _config = yaml.safe_load((PROJECT_ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
 DEEPSEEK_KEY = _config["deepseek_key"]
-ALI_VL_KEY = _config["ali_vl_key"]
+VOLC_ARK_KEY = _config.get("volc_ark_key", "")
 
 
 # ── 颜色：草系绿 ──────────────────────────
@@ -116,7 +116,7 @@ def build_system_prompt() -> str:
 用户说「学习某电影」时，调用 film_create 建库并立刻搜索填写「内容大纲」部分。绝对不要填写「深度解析」——那是留给用户粘贴影评原文或撰写个人观影笔记的地方。
 用户说「深度分析某电影」时，调用 film_analyze 读取「深度解析」下用户已粘贴的影评原文或观影笔记，将其糅合成完整分析。如果「深度解析」下已有糅合好的分析，不要再动。
 用户说「导入镜头」时，调用 film_import。
-用户说「导入照片」「处理照片」「整理照片」「处理我的照片」「生成索引」时，调用 photo_import。
+用户说「添加图片」「导入镜头」「整理图库」时，调用 photo_import。
 用户说「导入音乐」「导入专辑」「导入封面」「整理乐库」时，调用 music_import。
 用户说「学习某歌曲」「学习某专辑」时，调用 music_create 建库并立刻搜索填写「曲目信息」部分。绝对不要填写「听歌笔记」——那是留给用户撰写个人听歌笔记的地方。
 用户说「深度分析某歌曲」时，调用 music_analyze 读取「听歌笔记」下用户已写的内容，将其糅合成完整分析。如果「听歌笔记」下已有糅合好的分析，不要再动。
@@ -128,7 +128,7 @@ def build_system_prompt() -> str:
 - 「回忆之前聊过什么」「搜索记忆中的XX」→ recall_context 或 read_memory
 - 用户提到「影库」时才会检索影库内容（镜头帧 + 笔记，系统自动平衡）
 - 用户提到「乐库」时才会检索乐库内容（曲目 + 笔记，系统自动平衡）
-- 用户提到「摄影库」时才会检索照片索引
+- 用户提到「图库」「镜头库」时才会检索图片索引
 - 用户未提以上关键词时，只搜索对话记忆，不碰任何库
 - 永远不要用 read_file 或 list_dir 去翻 memory/ 目录——记忆工具有专门的检索入口"""
 
@@ -253,8 +253,13 @@ async def main():
         ),
     }
 
-    # ── 向量记忆（ChromaDB 内置多语言模型）───
+    # ── 向量记忆 ─────────────────────────
     chroma_dir = str(ROOT / "memory" / "chroma")
+    # 配置云端 embedding（火山引擎豆包），不配则回退本地 BGE
+    configure_cloud_embedding(
+        api_key=VOLC_ARK_KEY,
+        model_name="doubao-embedding-vision-251215",
+    )
     vector_memory = VectorMemory(
         memory_dir=MEMORY_DIR,
         chroma_dir=chroma_dir,
@@ -264,7 +269,7 @@ async def main():
     system_prompt = build_system_prompt()
 
     # ── 初始化 Agent ──────────────────────
-    vision_tool = VisionTool(api_key=ALI_VL_KEY)
+    vision_tool = VisionTool(api_key=VOLC_ARK_KEY)
     agent = Agent(
         llm_clients=llm_clients,
         system_prompt=system_prompt,
@@ -298,7 +303,7 @@ async def main():
             MusicCreateTool(music_dir=MUSIC_DAILY_DIR),
             MusicAnalyzeTool(music_dir=MUSIC_DAILY_DIR),
             PhotoImportTool(
-                photo_dir=PHOTO_DIR,
+                photo_dir=LENS_DIR,
                 vector_memory=vector_memory,
                 vision_tool=vision_tool,
             ),

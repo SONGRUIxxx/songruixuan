@@ -1,3 +1,7 @@
 @echo off
-set HF_ENDPOINT=https://hf-mirror.com
-start powershell -NoExit -Command "conda activate songruixuan; cd '%~dp0'; python songruixuan.py"
+chcp 65001 >nul
+cd /d "%~dp0"
+call D:\Software\anaconda\Scripts\activate.bat songruixuan
+start http://127.0.0.1:7860
+python web_app.py
+pause

@@ -3,19 +3,92 @@
 import hashlib
 import yaml
 from pathlib import Path
+from typing import List
 
 import chromadb
-from chromadb.utils import embedding_functions
+from chromadb.api.types import EmbeddingFunction as ChromaEmbeddingFunction
+import httpx
 
+
+# ══════════════════════════════════════════════════
+# 火山引擎多模态 Embedding Function
+# ══════════════════════════════════════════════════
+
+class VolcanoMultimodalEmbedding(ChromaEmbeddingFunction):
+    """适配火山引擎 /v3/embeddings/multimodal 端点"""
+
+    def __init__(self, api_key: str, model_name: str, dimensions: int = 1024):
+        self.api_key = api_key
+        self.model_name = model_name
+        self.dimensions = dimensions
+        self.endpoint = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
+
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        multimodal_input = [{"type": "text", "text": text} for text in input]
+
+        try:
+            resp = httpx.post(
+                self.endpoint,
+                json={
+                    "model": self.model_name,
+                    "input": multimodal_input,
+                    "dimensions": self.dimensions,
+                    "encoding_format": "float",
+                },
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            raise RuntimeError(f"火山 embedding 请求失败: {e}")
+
+        # 单条返回 {embedding, object}，多条返回 [{index, embedding}, ...]
+        inner = data.get("data", [])
+        if isinstance(inner, dict):
+            return [inner["embedding"]]
+        if isinstance(inner, list) and inner and isinstance(inner[0], dict):
+            items = sorted(inner, key=lambda d: d.get("index", 0))
+            return [item["embedding"] for item in items]
+        if isinstance(inner, list) and inner and isinstance(inner[0], list):
+            return inner
+        raise RuntimeError(f"未知的 embedding 返回格式: {type(inner).__name__}")
+
+
+# ══════════════════════════════════════════════════
+# Embedding 配置
+# ══════════════════════════════════════════════════
 
 _ef = None
+_cloud_ef = None
+_cloud_config: dict = {}
+
+
+def configure_cloud_embedding(api_key: str = "", model_name: str = ""):
+    """配置云端 embedding（火山引擎豆包），不传参则回退到本地 BGE"""
+    global _cloud_config, _ef, _cloud_ef
+    _cloud_config = {"api_key": api_key, "model_name": model_name} if api_key else {}
+    _ef = None
+    _cloud_ef = None
 
 
 def _get_ef():
-    """延迟加载模型"""
-    global _ef
-    if _ef is None:
-        _ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+    """获取 embedding function：优先云端豆包，fallback 本地 BGE"""
+    global _ef, _cloud_ef
+    if _ef is not None:
+        return _ef
+    if _cloud_config.get("api_key"):
+        if _cloud_ef is None:
+            _cloud_ef = VolcanoMultimodalEmbedding(
+                api_key=_cloud_config["api_key"],
+                model_name=_cloud_config["model_name"],
+            )
+        _ef = _cloud_ef
+    else:
+        _ef = chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name="BAAI/bge-small-zh-v1.5",
         )
     return _ef
@@ -411,7 +484,7 @@ class VectorMemory:
     # ── 摄影库索引 ────────────────────────────────
 
     def index_photo_library(self) -> int:
-        idx_file = self.memory_dir.parent / "photo_library_continually" / "index.yaml"
+        idx_file = self.memory_dir.parent / "lens_library" / "index.yaml"
         if not idx_file.exists():
             return 0
 
@@ -438,7 +511,7 @@ class VectorMemory:
 
     _MUSIC_KW = ["乐库"]
 
-    _PHOTO_FIND_KW = ["摄影库"]
+    _PHOTO_FIND_KW = ["图库", "镜头库"]
 
     @classmethod
     def _match_any(cls, query: str, keywords: list[str]) -> bool:
