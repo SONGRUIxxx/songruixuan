@@ -1,20 +1,3 @@
-# Python
 __pycache__/
 *.pyc
-*.egg-info/
-
-# Temp
-.history/
-*.log
-
-# Workspace (local files)
-Workspace/
-workspace/
-input/
-output/
-
-# ChromaDB (auto-generated, Phase 3)
 memory/chroma/
-
-# Local scratchpad
-Create/
