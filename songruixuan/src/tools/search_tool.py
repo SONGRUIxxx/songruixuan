@@ -1,12 +1,14 @@
-"""🔍 搜索工具 — DuckDuckGo 免费（无需 API Key）"""
+"""🔍 搜索工具 — 必应（免 API Key，国内可用）"""
 
+import re
 import httpx
+from bs4 import BeautifulSoup
 
 from src.tool_base import Tool, ToolResult
 
 
 class WebSearchTool(Tool):
-    """DuckDuckGo 网页搜索"""
+    """必应网页搜索"""
 
     @property
     def name(self) -> str:
@@ -31,36 +33,44 @@ class WebSearchTool(Tool):
 
     async def execute(self, query: str) -> ToolResult:
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
                 resp = await client.get(
-                    "https://lite.duckduckgo.com/lite/",
-                    params={"q": query},
-                    headers={"User-Agent": "SONGRUIXUAN/0.2"},
+                    "https://cn.bing.com/search",
+                    params={"q": query, "ensearch": 1},
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
                 )
                 resp.raise_for_status()
 
+            soup = BeautifulSoup(resp.text, "html.parser")
             results = []
-            for line in resp.text.split("\n"):
-                stripped = line.strip()
-                if stripped and not stripped.startswith("<") and len(stripped) > 20:
-                    results.append(stripped)
+            for li in soup.select("li.b_algo"):
+                title_el = li.select_one("h2 a")
+                snippet_el = li.select_one(".b_caption p, .b_lineclamp2")
+                if title_el:
+                    title = title_el.get_text(strip=True)
+                    raw_url = title_el.get("href", "")
+                    # Bing 重定向 URL 中提取真实链接
+                    import base64
+                    real_url = raw_url
+                    m = re.search(r'[?&]u=a1([^&]+)', raw_url)
+                    if m:
+                        try:
+                            real_url = base64.b64decode(m.group(1) + "==").decode("utf-8")
+                        except Exception:
+                            pass
+                    snippet = snippet_el.get_text(strip=True)[:300] if snippet_el else ""
+                    results.append(f"{len(results)+1}. **{title}**\n{real_url}\n{snippet}")
 
             if not results:
                 return ToolResult(success=True, content=f"🔍「{query}」无结果。")
-
-            lines = [f"🔍「{query}」:\n"]
-            for i, s in enumerate(results, 1):
-                lines.append(f"{i}. {s[:300]}")
-                lines.append("")
-
-            return ToolResult(success=True, content="\n".join(lines))
+            return ToolResult(success=True, content=f"🔍「{query}」:\n\n" + "\n\n".join(results[:6]))
 
         except Exception as e:
             return ToolResult(success=False, error=f"搜索失败: {e}")
 
 
 class ImageSearchTool(Tool):
-    """DuckDuckGo 图片搜索 — 搜参考图"""
+    """必应图片搜索 — 搜参考图"""
 
     @property
     def name(self) -> str:
@@ -70,7 +80,7 @@ class ImageSearchTool(Tool):
     def description(self) -> str:
         return (
             "搜索网络图片，返回图片链接。用于找构图参考、色板灵感、"
-            "电影截图风格参考等。结果可直接用于 vision 工具分析。"
+            "电影截图风格参考等。"
         )
 
     @property
@@ -79,41 +89,38 @@ class ImageSearchTool(Tool):
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "搜索关键词"},
-                "count": {
-                    "type": "integer",
-                    "description": "返回图片数量（默认 6）",
-                },
+                "count": {"type": "integer", "description": "返回数量（默认 6）"},
             },
             "required": ["query"],
         }
 
     async def execute(self, query: str, count: int = 6) -> ToolResult:
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
                 resp = await client.get(
-                    "https://lite.duckduckgo.com/lite/",
-                    params={"q": query, "iax": "images", "ia": "images"},
-                    headers={"User-Agent": "SONGRUIXUAN/0.2"},
+                    "https://cn.bing.com/images/search",
+                    params={"q": query},
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
                 )
                 resp.raise_for_status()
 
-            # 解析图片搜索结果
-            text = resp.text
+            soup = BeautifulSoup(resp.text, "html.parser")
             results = []
-            for line in text.split("\n"):
-                stripped = line.strip()
-                if stripped and len(stripped) > 10:
-                    results.append(stripped)
+            for img in soup.select(".imgpt a, a[href*='images']"):
+                href = img.get("href", "")
+                title = img.get("title", img.get_text(strip=True))[:100]
+                if href and "http" in href.lower():
+                    results.append(f"{title}\n{href}")
+
+            if not results:
+                # fallback: 从 murl 属性提取
+                imgs = re.findall(r'"murl"\s*:\s*"([^"]+)"', resp.text)
+                for u in imgs[:count]:
+                    results.append(u)
 
             if not results:
                 return ToolResult(success=True, content=f"🖼️「{query}」无结果。")
-
-            lines = [f"🖼️「{query}」图片搜索结果:\n"]
-            for i, s in enumerate(results[:count], 1):
-                lines.append(f"{i}. {s}")
-                lines.append("")
-
-            return ToolResult(success=True, content="\n".join(lines))
+            return ToolResult(success=True, content=f"🖼️「{query}」:\n\n" + "\n\n".join(results[:count]))
 
         except Exception as e:
             return ToolResult(success=False, error=f"图片搜索失败: {e}")

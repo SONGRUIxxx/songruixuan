@@ -36,7 +36,7 @@ class VisionTool(Tool):
         }
 
     async def execute(self, image: str, prompt: str = "") -> ToolResult:
-        question = prompt or "详细描述这张图片的构图、色调、光线运用和情绪氛围。"
+        question = prompt or "用简洁的中文描述这张图片的内容、构图和色调。"
 
         if image.startswith("http://") or image.startswith("https://"):
             image_url = image
@@ -47,7 +47,7 @@ class VisionTool(Tool):
             image_url = self._encode(path)
 
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.post(
                     self.endpoint,
                     json={
@@ -75,7 +75,15 @@ class VisionTool(Tool):
             return ToolResult(success=True, content=f"👁️ {content}")
 
         except Exception as e:
-            return ToolResult(success=False, error=f"图片分析失败: {e}")
+            detail = str(e)
+            try:
+                detail = e.response.json()
+            except Exception:
+                try:
+                    detail = e.response.text[:500]
+                except Exception:
+                    pass
+            return ToolResult(success=False, error=f"图片分析失败: {detail}")
 
     def _encode(self, path: Path) -> str:
         ext = path.suffix.lower()
