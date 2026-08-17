@@ -25,26 +25,34 @@ class VolcanoMultimodalEmbedding(ChromaEmbeddingFunction):
 
     def __call__(self, input: List[str]) -> List[List[float]]:
         multimodal_input = [{"type": "text", "text": text} for text in input]
+        last_err = None
 
-        try:
-            resp = httpx.post(
-                self.endpoint,
-                json={
-                    "model": self.model_name,
-                    "input": multimodal_input,
-                    "dimensions": self.dimensions,
-                    "encoding_format": "float",
-                },
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            raise RuntimeError(f"火山 embedding 请求失败: {e}")
+        for attempt in range(3):
+            try:
+                resp = httpx.post(
+                    self.endpoint,
+                    json={
+                        "model": self.model_name,
+                        "input": multimodal_input,
+                        "dimensions": self.dimensions,
+                        "encoding_format": "float",
+                    },
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    import time
+                    time.sleep(2 * (attempt + 1))
+        else:
+            raise RuntimeError(f"火山 embedding 请求失败（重试3次）: {last_err}")
 
         # 单条返回 {embedding, object}，多条返回 [{index, embedding}, ...]
         inner = data.get("data", [])
@@ -504,6 +512,114 @@ class VectorMemory:
         return self._search_col(self.get_or_create_photo_collection(), query, n)
 
     # ══════════════════════════════════════════════════
+    # 按库路由搜索（Web UI 驱动，不走关键词）
+    # ══════════════════════════════════════════════════
+
+    def search_libs(self, query: str, libs: list[str], n: int = 20) -> list[dict]:
+        """按用户选择的库搜索：分块粒度去重 → 取前 20 → ±2 扩展 → 最终去重 → 全部返回"""
+        results = []
+
+        if not libs:
+            results = self.search(query, n * 2)
+        else:
+            for lib in libs:
+                if lib == "对话库":
+                    results.extend(self.search(query, n))
+                elif lib == "电影库":
+                    try: results.extend(self.search_films(query, n // 2))
+                    except: pass
+                    try: results.extend(self.search_notes(query, n // 2))
+                    except: pass
+                elif lib == "音乐库":
+                    try: results.extend(self.search_music(query, n // 2))
+                    except: pass
+                    try: results.extend(self.search_music_notes(query, n // 2))
+                    except: pass
+                elif lib == "镜头库":
+                    try: results.extend(self.search_photos(query, n))
+                    except: pass
+
+        # 第一步：按分块粒度去重（同文档不同分块都保留），取最贴合的前 20
+        seen = set()
+        top = []
+        for r in results:
+            sid = r.get("session_id", 0)
+            ci = r.get("chunk_index", -1)
+            gid = r.get("group_id", "")
+            if (sid and ci >= 0) or (gid and ci >= 0):
+                tag = f"session_{sid}" if sid else gid
+                key = (r.get("source", ""), f"{tag}_chunk_{ci}")
+            else:
+                key = (r.get("source", ""), r.get("title", ""))
+            if key not in seen:
+                seen.add(key)
+                top.append(r)
+        top = top[:20]  # 只取最贴合的 20 条
+
+        # 第二步：上下文扩展（±2 相邻分块）
+        expanded = list(top)
+        all_ids = self.collection.get(include=[])["ids"]
+        chunk_map: dict[str, list[tuple[int, str]]] = {}
+        for rid in all_ids:
+            if "_chunk_" not in rid:
+                continue
+            prefix, rest = rid.split("_chunk_", 1)
+            try:
+                ci = int(rest.split("__")[0])
+            except (ValueError, IndexError):
+                continue
+            chunk_map.setdefault(prefix, []).append((ci, rid))
+
+        for r in top:
+            ci = r.get("chunk_index", -1)
+            if ci < 0:
+                continue
+            prefix = None
+            sid = r.get("session_id", 0)
+            gid = r.get("group_id", "")
+            if sid:
+                prefix = f"session_{sid}"
+            elif gid:
+                prefix = gid
+            if not prefix:
+                continue
+            for nci, nrid in chunk_map.get(prefix, []):
+                if 1 <= abs(nci - ci) <= 1:
+                    try:
+                        n_data = self.collection.get(ids=[nrid], include=["metadatas", "documents"])
+                        if n_data["metadatas"]:
+                            nm = n_data["metadatas"][0]
+                            ndoc = n_data["documents"][0] if n_data["documents"] else ""
+                            expanded.append({
+                                "title": nm.get("title", r["title"]),
+                                "preview": ndoc or nm.get("preview", ""),
+                                "full_content": ndoc or nm.get("preview", ""),
+                                "source": nm.get("source", r["source"]),
+                                "session_id": nm.get("session_id", sid),
+                                "chunk_index": nci,
+                                "group_id": gid,
+                            })
+                    except Exception:
+                        pass
+
+        # 第三步：最终去重，全部返回
+        seen2 = set()
+        final = []
+        for r in expanded:
+            sid = r.get("session_id", 0)
+            ci = r.get("chunk_index", -1)
+            gid = r.get("group_id", "")
+            if (sid and ci >= 0) or (gid and ci >= 0):
+                tag = f"session_{sid}" if sid else gid
+                key = (r.get("source", ""), f"{tag}_chunk_{ci}")
+            else:
+                key = (r.get("source", ""), r.get("title", ""))
+            if key not in seen2:
+                seen2.add(key)
+                final.append(r)
+        return final
+
+    # ══════════════════════════════════════════════════
     # 语义路由
     # ══════════════════════════════════════════════════
 
@@ -627,7 +743,7 @@ class VectorMemory:
                 continue
 
             for nci, nrid in chunk_map.get(prefix, []):
-                if 1 <= abs(nci - ci) <= 2:  # ±2
+                if 1 <= abs(nci - ci) <= 1:  # ±2
                     try:
                         n_data = self.collection.get(ids=[nrid], include=["metadatas", "documents"])
                         if n_data["metadatas"]:

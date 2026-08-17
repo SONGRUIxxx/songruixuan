@@ -84,10 +84,15 @@ def clear_tos_workspace() -> str:
         return f"❌ 清空失败: {e}"
 
 # ── 共享组件 ────────────────────────────────
-llm_client = LLMClient(
+llm_pro = LLMClient(
     api_key=DEEPSEEK_KEY,
     api_base="https://api.deepseek.com/v1",
     model="deepseek-v4-pro",
+)
+llm_flash = LLMClient(
+    api_key=DEEPSEEK_KEY,
+    api_base="https://api.deepseek.com/v1",
+    model="deepseek-v4-flash",
 )
 configure_cloud_embedding(
     api_key=VOLC_ARK_KEY,
@@ -105,7 +110,7 @@ def _common_tools():
 
 def make_creative_agent() -> Agent:
     return Agent(
-        llm_clients={"deepseek": llm_client},
+        llm_clients={"deepseek": llm_flash},
         system_prompt=f"""现在是 {datetime.now().strftime('%Y年%m月%d日 %H:%M')}。
 你是菘蕊萱——一个创作者。写旁白、拍片子、扒歌、分析镜头、感受光影。
 
@@ -129,7 +134,7 @@ def make_creative_agent() -> Agent:
 
 def make_film_agent() -> Agent:
     return Agent(
-        llm_clients={"deepseek": llm_client},
+        llm_clients={"deepseek": llm_pro},
         system_prompt=f"""现在是 {datetime.now().strftime('%Y年%m月%d日 %H:%M')}。
 你是菘蕊萱的电影学习助手。用户点击「学习电影」进入此模式。
 
@@ -166,7 +171,7 @@ def make_film_agent() -> Agent:
 
 def make_music_agent() -> Agent:
     return Agent(
-        llm_clients={"deepseek": llm_client},
+        llm_clients={"deepseek": llm_pro},
         system_prompt=f"""现在是 {datetime.now().strftime('%Y年%m月%d日 %H:%M')}。
 你是菘蕊萱的音乐学习助手。用户点击「学习音乐」进入此模式。
 
@@ -202,7 +207,7 @@ def make_music_agent() -> Agent:
 
 def make_lens_agent() -> Agent:
     return Agent(
-        llm_clients={"deepseek": llm_client},
+        llm_clients={"deepseek": llm_flash},
         system_prompt=f"""现在是 {datetime.now().strftime('%Y年%m月%d日 %H:%M')}。
 你是菘蕊萱的镜头助手。用户正在往图库里添加图片/镜头。
 
@@ -235,29 +240,8 @@ def sync_index():
 
 
 def search_with_libs(query: str, libs: list[str]) -> list[dict]:
-    """按用户选择的库搜索，不依赖关键词路由"""
-    results = []
-    if not libs:
-        results = vector_memory.search(query, 20)
-    else:
-        for lib in libs:
-            if lib == "对话库":
-                results.extend(vector_memory.search(query, 10))
-            elif lib == "电影库":
-                results.extend(vector_memory.search_notes(query, 5))
-            elif lib == "音乐库":
-                results.extend(vector_memory.search_music_notes(query, 5))
-            elif lib == "镜头库":
-                results.extend(vector_memory.search_photos(query, 5))
-    # 去重
-    seen = set()
-    deduped = []
-    for r in results:
-        key = (r.get("source", ""), r.get("title", ""))
-        if key not in seen:
-            seen.add(key)
-            deduped.append(r)
-    return deduped[:20]
+    """按用户选择的库搜索，走完整管道（分池配额 + 上下文扩展）"""
+    return vector_memory.search_libs(query, libs)
 
 
 async def creative_chat(message: str, history: list, agent_state, libs: list, uploaded_file, gen_md: bool):
@@ -307,7 +291,7 @@ async def creative_chat(message: str, history: list, agent_state, libs: list, up
                     except Exception:
                         return f"\n🎬 {fname}（视频分析失败）\n{url_tag}"
                 return f"\n🎬 {fname}（TOS 未配置，无法分析）\n"
-            elif ext == ".md":
+            elif ext in (".md", ".txt"):
                 return f"\n📝 {fname}：\n{Path(fpath).read_text(encoding='utf-8')[:3000]}\n{url_tag}"
             return f"\n📎 {fname}\n{url_tag}"
         results = await asyncio.gather(*[_handle_file(f) for f in files])
@@ -330,7 +314,7 @@ async def creative_chat(message: str, history: list, agent_state, libs: list, up
 
     full_message = gen_prefix + message + file_info
     if memory_text:
-        full_message = f"{memory_text}\n\n---\n\n{full_message}"
+        full_message = f"## 🧠 相关记忆\n\n{memory_text}\n\n<!--MEM_END-->\n\n{full_message}"
 
     agent.add_user_message(full_message)
     result = await agent.run()
@@ -364,7 +348,12 @@ async def save_creative_session(agent_state):
         transcript_lines = []
         for m in agent_state.messages:
             if m.role == "user":
-                transcript_lines.append(f"**🌸**: {m.content}")
+                content = str(m.content)
+                # 剥离注入的相关记忆（<!--MEM_END--> 标记之后才是真实对话）
+                if "<!--MEM_END-->" in content:
+                    parts = content.split("<!--MEM_END-->\n\n", 1)
+                    content = parts[1] if len(parts) > 1 else content
+                transcript_lines.append(f"**🌸**: {content}")
             elif m.role == "assistant":
                 transcript_lines.append(f"**🤖**: {m.content}")
 
@@ -563,7 +552,7 @@ footer { display: none !important; }
 # ── UI ───────────────────────────────────────
 
 def build_ui():
-    with gr.Blocks(title="菘蕊萱", theme=theme, css=css) as app:
+    with gr.Blocks(title="菘蕊萱") as app:
         # ── 工具函数 ──
         ALL_PAGES = []  # 各页面逐创建时追加
         def to_main():
@@ -629,7 +618,7 @@ def build_ui():
                 creative_input = gr.Textbox(placeholder="输入...", label="", scale=5)
                 creative_file = gr.File(
                     label="📎", scale=1, file_count="multiple",
-                    file_types=[".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".mp4", ".avi", ".mov", ".mkv", ".md"],
+                    file_types=[".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".mp4", ".avi", ".mov", ".mkv", ".md", ".txt"],
                 )
                 creative_send = gr.Button("发送", variant="primary", scale=1)
             with gr.Row():
@@ -901,7 +890,7 @@ def build_ui():
             gr.Markdown("## 🎨 生成图片")
             gr.Markdown("输入提示词，上传参考图（自动传 TOS），点生成即可。")
             img_gen_prompt = gr.Textbox(placeholder="输入图片描述/提示词...", label="提示词", lines=4)
-            img_gen_file = gr.File(label="📎 参考图 / MD 脚本（可选）", file_count="multiple", file_types=[".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".md"])
+            img_gen_file = gr.File(label="📎 参考图 / MD 脚本（可选）", file_count="multiple", file_types=[".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".md", ".txt"])
             with gr.Row(elem_classes="footer-row"):
                 img_gen_go = gr.Button("🎨 生成", variant="primary")
                 img_gen_back = gr.Button("← 返回主界面", variant="secondary")
@@ -916,7 +905,7 @@ def build_ui():
                         fp = f if isinstance(f, str) else (f.get("name","") if isinstance(f, dict) else getattr(f, "name",""))
                         if fp:
                             ext = Path(fp).suffix.lower()
-                            if ext == ".md":
+                            if ext in (".md", ".txt"):
                                 md_text = Path(fp).read_text(encoding="utf-8")[:5000]
                             else:
                                 u = upload_to_tos(fp)
@@ -929,9 +918,13 @@ def build_ui():
                 return f"✅ {result.content}" if result.success else f"❌ {result.error}"
 
             img_gen_go.click(
-                fn=lambda: '<div class="big-loading">🎨 正在生成中，请稍候...</div>', outputs=[img_gen_result]
+                fn=lambda: ('<div class="big-loading">🎨 正在生成中，请稍候...</div>', gr.Button(interactive=False)),
+                outputs=[img_gen_result, img_gen_go]
             ).then(
                 fn=img_gen_fn, inputs=[img_gen_prompt, img_gen_file], outputs=[img_gen_result]
+            ).then(
+                fn=lambda r: (r, gr.Button(interactive=True)),
+                inputs=[img_gen_result], outputs=[img_gen_result, img_gen_go]
             )
             img_gen_back.click(fn=to_main, outputs=[main_page] + ALL_PAGES)
 
@@ -941,7 +934,7 @@ def build_ui():
             gr.Markdown("## 🎬 生成视频")
             gr.Markdown("输入分镜脚本，上传参考图（自动传 TOS）。生成约需 5-10 分钟。")
             vid_gen_prompt = gr.Textbox(placeholder="输入视频描述/分镜脚本...", label="提示词", lines=6)
-            vid_gen_file = gr.File(label="📎 参考 / MD 脚本（可选）", file_count="multiple", file_types=[".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".mp4", ".avi", ".mov", ".mkv", ".md"])
+            vid_gen_file = gr.File(label="📎 参考 / MD 脚本（可选）", file_count="multiple", file_types=[".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".mp4", ".avi", ".mov", ".mkv", ".md", ".txt"])
             with gr.Row(elem_classes="footer-row"):
                 vid_gen_go = gr.Button("🎬 生成", variant="primary")
                 vid_gen_back = gr.Button("← 返回主界面", variant="secondary")
@@ -956,7 +949,7 @@ def build_ui():
                         fp = f if isinstance(f, str) else (f.get("name","") if isinstance(f, dict) else getattr(f, "name",""))
                         if fp:
                             ext = Path(fp).suffix.lower()
-                            if ext == ".md":
+                            if ext in (".md", ".txt"):
                                 md_text = Path(fp).read_text(encoding="utf-8")[:8000]
                             else:
                                 u = upload_to_tos(fp)
@@ -973,9 +966,13 @@ def build_ui():
                 return f"✅ {result.content}" if result.success else f"❌ {result.error}"
 
             vid_gen_go.click(
-                fn=lambda: '<div class="big-loading">🎬 已提交，正在生成中（约 5-10 分钟）...</div>', outputs=[vid_gen_result]
+                fn=lambda: ('<div class="big-loading">🎬 已提交，正在生成中（约 5-10 分钟）...</div>', gr.Button(interactive=False)),
+                outputs=[vid_gen_result, vid_gen_go]
             ).then(
                 fn=vid_gen_fn, inputs=[vid_gen_prompt, vid_gen_file], outputs=[vid_gen_result]
+            ).then(
+                fn=lambda r: (r, gr.Button(interactive=True)),
+                inputs=[vid_gen_result], outputs=[vid_gen_result, vid_gen_go]
             )
 
             vid_gen_go.click(fn=vid_gen_fn, inputs=[vid_gen_prompt, vid_gen_file], outputs=[vid_gen_result])
@@ -1042,10 +1039,11 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️ {e}")
     app = build_ui()
-    print("\n🌸 菘蕊萱已启动 → http://127.0.0.1:7860\n")
     app.launch(
         server_name="127.0.0.1",
         server_port=7860,
         share=False,
-        inbrowser=False,
+        inbrowser=True,
+        theme=theme,
+        css=css,
     )
