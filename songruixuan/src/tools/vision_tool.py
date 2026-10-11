@@ -90,5 +90,20 @@ class VisionTool(Tool):
         mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
                     ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp"}
         mime = mime_map.get(ext, "image/jpeg")
-        data = base64.b64encode(path.read_bytes()).decode("utf-8")
-        return f"data:{mime};base64,{data}"
+        data = path.read_bytes()
+        # 超大图降采样到单边 ≤4096，避免触发豆包 36MP 上限（如 8064×6048 = 48.7MP）
+        try:
+            from PIL import Image
+            import io
+            with Image.open(io.BytesIO(data)) as im:
+                w, h = im.size
+                if max(w, h) > 4096:
+                    scale = 4096 / max(w, h)
+                    im = im.convert("RGB").resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    im.save(buf, "JPEG", quality=88)
+                    data = buf.getvalue()
+                    mime = "image/jpeg"
+        except Exception:
+            pass  # 读不了就按原样发送
+        return f"data:{mime};base64,{base64.b64encode(data).decode('utf-8')}"

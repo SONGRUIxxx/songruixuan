@@ -23,8 +23,6 @@ from src.tools.file_tools import DeleteTool, ListDirTool, MoveTool, ReadTool, Wr
 from src.tools.bash_tool import BashTool
 from src.tools.memory_tool import ReadMemoryTool, RecallContextTool, SaveMemoryTool
 from src.tools.vector_memory import VectorMemory, configure_cloud_embedding
-from src.tools.film_library import FilmCreateTool, FilmAnalyzeTool, FilmImportTool
-from src.tools.music_tools import MusicImportTool, MusicCreateTool, MusicAnalyzeTool
 from src.tools.photo_tools import PhotoImportTool
 from src.tools.search_tool import ImageSearchTool, WebSearchTool
 from src.tools.web_tools import WebFetchTool
@@ -35,15 +33,12 @@ from agent import Agent
 
 WORKSPACE = r"D:\Workspace"
 MEMORY_DIR = str(ROOT / "memory" / "conversations")
-FILM_DAILY_DIR = str(ROOT / "memory" / "film_library_daily")
-MUSIC_DAILY_DIR = str(ROOT / "memory" / "music_library_daily")
 LENS_DIR = str(ROOT / "memory" / "lens_library")
 
 
 # ── API Keys（从 config/config.yaml 读取，不上传 Git）───
 import yaml
 _config = yaml.safe_load((PROJECT_ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-DEEPSEEK_KEY = _config["deepseek_key"]
 VOLC_ARK_KEY = _config.get("volc_ark_key", "")
 
 
@@ -95,12 +90,12 @@ def build_system_prompt() -> str:
 
 ## 你能做什么
 
-- 语义搜索对话记忆和影库
+- 语义搜索对话记忆和镜头库
 - 搜索网页和图片、分析图片
 - 阅读各类文档
 - 写文字——代码文档、纪录旁白、技术报告
 - 分析图片（构图、色调、光线、情绪）
-- 管理影库（建库 → 截图排序 → 视觉描述 → 索引）
+- 管理镜头库（导入图片 → 视觉描述 → 索引）
 - 执行 shell 命令
 - 记住每次对话，语义检索的相关记忆自动注入上下文
 
@@ -112,22 +107,14 @@ def build_system_prompt() -> str:
 ## 规则
 
 涉及文件写入、修改、删除的操作，先确认再执行。
-回答创作或灵感问题时，系统已自动搜索影库相关内容并注入上下文，请自然地融合这些素材。
-用户说「学习某电影」时，调用 film_create 建库并立刻搜索填写「内容大纲」部分。绝对不要填写「深度解析」——那是留给用户粘贴影评原文或撰写个人观影笔记的地方。
-用户说「深度分析某电影」时，调用 film_analyze 读取「深度解析」下用户已粘贴的影评原文或观影笔记，将其糅合成完整分析。如果「深度解析」下已有糅合好的分析，不要再动。
-用户说「导入镜头」时，调用 film_import。
+回答创作或灵感问题时，系统已自动搜索镜头库相关内容并注入上下文，请自然地融合这些素材。
 用户说「添加图片」「导入镜头」「整理图库」时，调用 photo_import。
-用户说「导入音乐」「导入专辑」「导入封面」「整理乐库」时，调用 music_import。
-用户说「学习某歌曲」「学习某专辑」时，调用 music_create 建库并立刻搜索填写「曲目信息」部分。绝对不要填写「听歌笔记」——那是留给用户撰写个人听歌笔记的地方。
-用户说「深度分析某歌曲」时，调用 music_analyze 读取「听歌笔记」下用户已写的内容，将其糅合成完整分析。如果「听歌笔记」下已有糅合好的分析，不要再动。
 不要自己写脚本替代已有工具——工具已实现完整功能，直接调用即可。
 
 ## 记忆库访问
 
 每次对话开头已自动注入「🧠 相关记忆」——请先阅读它，基于记忆回答，不要忽略。
 - 「回忆之前聊过什么」「搜索记忆中的XX」→ recall_context 或 read_memory
-- 用户提到「影库」时才会检索影库内容（镜头帧 + 笔记，系统自动平衡）
-- 用户提到「乐库」时才会检索乐库内容（曲目 + 笔记，系统自动平衡）
 - 用户提到「图库」「镜头库」时才会检索图片索引
 - 用户未提以上关键词时，只搜索对话记忆，不碰任何库
 - 永远不要用 read_file 或 list_dir 去翻 memory/ 目录——记忆工具有专门的检索入口"""
@@ -220,10 +207,6 @@ async def save_session_summary(agent: Agent, vector_memory=None):
     if vector_memory:
         try:
             vector_memory.index_conversations()
-            vector_memory.index_notes()
-            vector_memory.index_music_notes()
-            vector_memory.index_film_library()
-            vector_memory.index_music_library()
             vector_memory.index_photo_library()
         except Exception as e:
             print(f"\n{YELLOW}⚠️ 向量索引更新失败: {e}{RESET}")
@@ -243,13 +226,13 @@ async def main():
             pass
     print(f"{LEAF}🌸 你好菘蕊萱，这是我们的第 {session_count} 次对话{RESET}\n")
 
-    # ── DeepSeek 全栈 ──────────────────────
-    # LLM + Vision + 文档生成，全部走 DeepSeek
+    # ── LLM 全栈（DeepSeek 模型，走火山方舟）──
+    # LLM + Vision + 文档生成，统一火山引擎一个账户
     llm_clients = {
         "deepseek": LLMClient(
-            api_key=DEEPSEEK_KEY,
-            api_base="https://api.deepseek.com/v1",
-            model="deepseek-v4-pro",
+            api_key=VOLC_ARK_KEY,
+            api_base="https://ark.cn-beijing.volces.com/api/v3",
+            model="deepseek-v4-pro-ga-260813",
         ),
     }
 
@@ -288,20 +271,6 @@ async def main():
             ImageSearchTool(),
             WebFetchTool(),
             vision_tool,
-            FilmCreateTool(film_library_dir=FILM_DAILY_DIR),
-            FilmAnalyzeTool(film_library_dir=FILM_DAILY_DIR),
-            FilmImportTool(
-                film_library_dir=FILM_DAILY_DIR,
-                vector_memory=vector_memory,
-                vision_tool=vision_tool,
-            ),
-            MusicImportTool(
-                music_dir=MUSIC_DAILY_DIR,
-                vector_memory=vector_memory,
-                vision_tool=vision_tool,
-            ),
-            MusicCreateTool(music_dir=MUSIC_DAILY_DIR),
-            MusicAnalyzeTool(music_dir=MUSIC_DAILY_DIR),
             PhotoImportTool(
                 photo_dir=LENS_DIR,
                 vector_memory=vector_memory,
@@ -314,12 +283,8 @@ async def main():
     # ── 启动时增量同步向量库（检测各库文件变更，仅索引新增部分）──
     print(f"{DIM}🧠 正在同步向量库...{RESET}", end=" ", flush=True)
     n_conv = vector_memory.index_conversations()
-    n_notes = vector_memory.index_notes()
-    n_film = vector_memory.index_film_library()
-    n_music = vector_memory.index_music_library()
-    n_music_notes = vector_memory.index_music_notes()
     n_photo = vector_memory.index_photo_library()
-    total_new = n_conv + n_notes + n_film + n_music + n_music_notes + n_photo
+    total_new = n_conv + n_photo
     if total_new > 0:
         print(f"{GREEN}✅ 已同步{RESET}\n")
     else:

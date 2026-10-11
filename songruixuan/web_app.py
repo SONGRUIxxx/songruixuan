@@ -13,9 +13,8 @@ from datetime import datetime
 
 from src.llm_client import LLMClient
 from src.tools.vision_tool import VisionTool
+from src.tools.raw_utils import raw_to_jpeg
 from src.tools.vector_memory import VectorMemory, configure_cloud_embedding
-from src.tools.film_library import FilmCreateTool, FilmAnalyzeTool
-from src.tools.music_tools import MusicCreateTool, MusicAnalyzeTool
 from src.tools.photo_tools import PhotoImportTool
 from src.tools.search_tool import WebSearchTool, ImageSearchTool
 from src.tools.web_tools import WebFetchTool
@@ -25,12 +24,9 @@ from agent import Agent
 
 # ── 配置 ──────────────────────────────────────
 _config = yaml.safe_load((PROJECT_ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-DEEPSEEK_KEY = _config["deepseek_key"]
 VOLC_ARK_KEY = _config.get("volc_ark_key", "")
 
 MEMORY_DIR = str(ROOT / "memory" / "conversations")
-FILM_DIR = str(ROOT / "memory" / "film_library_daily")
-MUSIC_DIR = str(ROOT / "memory" / "music_library_daily")
 LENS_DIR = str(ROOT / "memory" / "lens_library")
 CHROMA_DIR = str(ROOT / "memory" / "chroma")
 WORKSPACE = r"D:\Workspace"
@@ -85,14 +81,14 @@ def clear_tos_workspace() -> str:
 
 # ── 共享组件 ────────────────────────────────
 llm_pro = LLMClient(
-    api_key=DEEPSEEK_KEY,
-    api_base="https://api.deepseek.com/v1",
-    model="deepseek-v4-pro",
+    api_key=VOLC_ARK_KEY,
+    api_base="https://ark.cn-beijing.volces.com/api/v3",
+    model="deepseek-v4-pro-ga-260813",
 )
 llm_flash = LLMClient(
-    api_key=DEEPSEEK_KEY,
-    api_base="https://api.deepseek.com/v1",
-    model="deepseek-v4-flash",
+    api_key=VOLC_ARK_KEY,
+    api_base="https://ark.cn-beijing.volces.com/api/v3",
+    model="deepseek-v4-flash-ga-260731",
 )
 configure_cloud_embedding(
     api_key=VOLC_ARK_KEY,
@@ -132,79 +128,6 @@ def make_creative_agent() -> Agent:
     )
 
 
-def make_film_agent() -> Agent:
-    return Agent(
-        llm_clients={"deepseek": llm_pro},
-        system_prompt=f"""现在是 {datetime.now().strftime('%Y年%m月%d日 %H:%M')}。
-你是菘蕊萱的电影学习助手。用户点击「学习电影」进入此模式。
-
-### 你的工作流程：
-
-**第一步：搜集信息**
-用户告诉你电影名后，立刻用 web_search 搜索，生成结构化的「内容大纲」，包含：
-- 基本信息（片名、上映年份、导演、主演、片长）
-- 故事梗概
-- 叙事结构
-- 视觉风格
-- 声音设计
-- 核心主题
-- 值得学习的创作手法
-
-**第三步：和用户讨论**
-把大纲展示给用户，问用户有什么补充或个人感受。在对话中逐步收集用户的观影笔记。
-
-**第四步：等待整合**
-当用户按「确认结束，整理笔记」时，把以上所有内容整合为最终格式输出：
-## 内容大纲
-（客观信息，你整理的）
-## 深度解析
-（结合用户的主观笔记和你的分析，糅合成连贯的深度分析）
-
-禁止擅自保存文件。""",
-        tools=_common_tools() + [
-            FilmCreateTool(film_library_dir=FILM_DIR),
-            FilmAnalyzeTool(film_library_dir=FILM_DIR),
-        ],
-        workspace_dir=WORKSPACE,
-    )
-
-
-def make_music_agent() -> Agent:
-    return Agent(
-        llm_clients={"deepseek": llm_pro},
-        system_prompt=f"""现在是 {datetime.now().strftime('%Y年%m月%d日 %H:%M')}。
-你是菘蕊萱的音乐学习助手。用户点击「学习音乐」进入此模式。
-
-### 你的工作流程：
-
-**第一步：搜集信息**
-用户告诉你曲目名后，立刻用 web_search 搜索，生成结构化的「曲目信息」，包含：
-- 基本信息（歌名、艺人、发行年份、专辑）
-- 风格流派
-- 乐器编排
-- 和弦进行 / 编曲分析
-- 歌词主题
-- 制作背景
-
-**第三步：和用户讨论**
-把曲目信息展示给用户，问用户的听歌感受。在对话中讨论乐器、和弦、编曲、风格等，逐步收集用户的个人听歌笔记。
-
-**第四步：等待整合**
-当用户按「确认结束，整理笔记」时，把以上所有内容整合为最终格式输出：
-## 曲目信息
-（客观信息，你整理的）
-## 听歌笔记
-（结合用户的主观感受和你的分析，糅合成连贯的深度笔记）
-
-禁止擅自保存文件。""",
-        tools=_common_tools() + [
-            MusicCreateTool(music_dir=MUSIC_DIR),
-            MusicAnalyzeTool(music_dir=MUSIC_DIR),
-        ],
-        workspace_dir=WORKSPACE,
-    )
-
-
 def make_lens_agent() -> Agent:
     return Agent(
         llm_clients={"deepseek": llm_flash},
@@ -230,10 +153,8 @@ def make_lens_agent() -> Agent:
 def sync_index():
     try:
         n_conv = vector_memory.index_conversations()
-        n_notes = vector_memory.index_notes()
-        n_music_notes = vector_memory.index_music_notes()
         n_photo = vector_memory.index_photo_library()
-        total = n_conv + n_notes + n_music_notes + n_photo
+        total = n_conv + n_photo
         return f"🧠 向量库：{'✅ 已同步' if total > 0 else '已是最新'}"
     except Exception as e:
         return f"⚠️ {e}"
@@ -333,12 +254,6 @@ async def creative_chat(message: str, history: list, agent_state, libs: list, up
     history.append({"role": "user", "content": disp_msg})
     history.append({"role": "assistant", "content": result})
     return "", history, agent, None
-
-
-async def simple_chat(message: str, history: list, agent_state):
-    """电影/音乐等模式用的简单对话，不走库选择和附件"""
-    result = await creative_chat(message, history, agent_state, [], None, False)
-    return result[:3]  # msg, history, agent
 
 
 async def save_creative_session(agent_state):
@@ -560,8 +475,6 @@ def build_ui():
 
         # 状态
         creative_agent = gr.State(None)
-        film_agent = gr.State(None)
-        music_agent = gr.State(None)
         lens_agent = gr.State(None)
 
         # ═══════════════ 主界面 ═══════════════
@@ -587,10 +500,6 @@ def build_ui():
             with gr.Column(elem_classes="menu-btn"):
                 creative_btn = gr.Button("🎨  创作模式", size="lg")
             with gr.Column(elem_classes="menu-btn"):
-                film_btn = gr.Button("🎬  学习电影", size="lg")
-            with gr.Column(elem_classes="menu-btn"):
-                music_btn = gr.Button("🎵  学习音乐", size="lg")
-            with gr.Column(elem_classes="menu-btn"):
                 lens_btn = gr.Button("🖼️  学习镜头", size="lg")
             with gr.Column(elem_classes="menu-btn"):
                 img_gen_btn = gr.Button("🎨  生成图片", size="lg")
@@ -607,7 +516,7 @@ def build_ui():
             gr.Markdown("## 🎨 创作模式")
 
             creative_libs = gr.CheckboxGroup(
-                choices=["对话库", "电影库", "音乐库", "镜头库"],
+                choices=["对话库", "镜头库"],
                 value=["对话库"],
                 label="检索范围",
                 interactive=True,
@@ -654,168 +563,11 @@ def build_ui():
                 outputs=[creative_status] + [main_page] + ALL_PAGES,
             ).then(fn=lambda: (None, []), outputs=[creative_agent, creative_chatbot])
 
-        # ═══════════════ 学习电影 ═══════════════
-        with gr.Column(visible=False) as film_page:
-            ALL_PAGES.append(film_page)
-            gr.Markdown("## 🎬 学习电影")
-            film_chatbot = gr.Chatbot(height=450)
-            with gr.Row():
-                film_input = gr.Textbox(placeholder="聊聊这部电影...", label="", scale=5)
-                film_send = gr.Button("发送", variant="primary", scale=1)
-            with gr.Row():
-                film_finish = gr.Button("✅ 确认结束，整理笔记")
-                film_preview = gr.Markdown("", visible=False)
-            with gr.Row(elem_classes="footer-row"):
-                film_save = gr.Button("💾 保存入库", variant="secondary", interactive=False)
-                film_discard = gr.Button("🗑️ 取消入库", variant="secondary")
-            film_status = gr.Markdown("", elem_classes="status-line")
-
-            async def film_finish_fn(agent_state, history):
-                if not agent_state:
-                    return "", "", gr.Button(interactive=False), gr.Button(interactive=True), agent_state
-                agent_state.add_user_message("请将以上所有讨论整合成电影笔记，格式：\n## 内容大纲\n（客观信息）\n## 深度解析\n（主观感受+分析）")
-                result = await agent_state.run()
-                history.append({"role": "user", "content": "[确认结束，整理笔记]"})
-                history.append({"role": "assistant", "content": result})
-                return result, "", gr.Button(interactive=True), gr.Button(interactive=False), agent_state
-
-            async def film_save_fn(agent_state):
-                if not agent_state:
-                    return ("没有笔记可保存",) + to_main()
-                try:
-                    # 收集笔记内容
-                    film_name = ""
-                    content = ""
-                    for m in agent_state.messages:
-                        if m.role == "assistant" and "## 内容大纲" in str(m.content):
-                            content = str(m.content)
-                    if not content:
-                        return ("未找到整理好的笔记，请先点「确认结束」",) + to_main()
-                    # 存到 YAML
-                    yp = Path(FILM_DIR) / "notes.yaml"
-                    data = {}
-                    if yp.exists():
-                        data = yaml.safe_load(yp.read_text(encoding="utf-8")) or {}
-                    films = data.get("films", [])
-                    # 尝试从对话中提取电影名
-                    for m in agent_state.messages:
-                        if m.role == "user" and "电影" in str(m.content):
-                            film_name = str(m.content)[:50]
-                            break
-                    if not film_name:
-                        film_name = f"电影笔记 {datetime.now().strftime('%m%d')}"
-                    films.append({"name": film_name, "content": content})
-                    yp.parent.mkdir(parents=True, exist_ok=True)
-                    yp.write_text(
-                        yaml.dump({"films": films}, allow_unicode=True, default_flow_style=False, sort_keys=False),
-                        encoding="utf-8",
-                    )
-                    vector_memory.index_notes()
-                    return ("✅ 已保存到电影库",) + to_main()
-                except Exception as e:
-                    return (f"❌ {e}",) + to_main()
-
-            film_send.click(
-                fn=simple_chat, inputs=[film_input, film_chatbot, film_agent],
-                outputs=[film_input, film_chatbot, film_agent],
-            ).then(lambda: "", None, film_input)
-
-            film_finish.click(
-                fn=film_finish_fn, inputs=[film_agent, film_chatbot],
-                outputs=[film_preview, film_status, film_save, film_discard, film_agent],
-            )
-            film_save.click(
-                fn=lambda: '<div class="big-loading">💾 正在保存入库...</div>', outputs=[film_status],
-            ).then(
-                fn=film_save_fn, inputs=[film_agent],
-                outputs=[film_status, main_page] + ALL_PAGES,
-            )
-            film_discard.click(
-                fn=lambda: ("🫧 已丢弃",) + to_main(),
-                outputs=[film_status] + [main_page] + ALL_PAGES,
-            ).then(fn=lambda: (None, []), outputs=[film_agent, film_chatbot])
-
-        # ═══════════════ 学习音乐 ═══════════════
-        with gr.Column(visible=False) as music_page:
-            ALL_PAGES.append(music_page)
-            gr.Markdown("## 🎵 学习音乐")
-            music_chatbot = gr.Chatbot(height=450)
-            with gr.Row():
-                music_input = gr.Textbox(placeholder="聊聊这首歌...", label="", scale=5)
-                music_send = gr.Button("发送", variant="primary", scale=1)
-            with gr.Row():
-                music_finish = gr.Button("✅ 确认结束，整理笔记")
-                music_preview = gr.Markdown("", visible=False)
-            with gr.Row(elem_classes="footer-row"):
-                music_save = gr.Button("💾 保存入库", variant="secondary", interactive=False)
-                music_discard = gr.Button("🗑️ 取消入库", variant="secondary")
-            music_status = gr.Markdown("", elem_classes="status-line")
-
-            async def music_finish_fn(agent_state, history):
-                if not agent_state:
-                    return "", "", gr.Button(interactive=False), gr.Button(interactive=True), agent_state
-                agent_state.add_user_message("请将以上所有讨论整合成音乐笔记，格式：\n## 曲目信息\n（客观信息）\n## 听歌笔记\n（主观感受+分析）")
-                result = await agent_state.run()
-                history.append({"role": "user", "content": "[确认结束，整理笔记]"})
-                history.append({"role": "assistant", "content": result})
-                return result, "", gr.Button(interactive=True), gr.Button(interactive=False), agent_state
-
-            async def music_save_fn(agent_state):
-                if not agent_state:
-                    return ("没有笔记可保存",) + to_main()
-                try:
-                    content = ""
-                    for m in agent_state.messages:
-                        if m.role == "assistant" and "## 曲目信息" in str(m.content):
-                            content = str(m.content)
-                    if not content:
-                        return ("未找到整理好的笔记",) + to_main()
-                    yp = Path(MUSIC_DIR) / "notes.yaml"
-                    data = {}
-                    if yp.exists():
-                        data = yaml.safe_load(yp.read_text(encoding="utf-8")) or {}
-                    tracks = data.get("tracks", [])
-                    track_name = f"音乐笔记 {datetime.now().strftime('%m%d')}"
-                    for m in agent_state.messages:
-                        if m.role == "user" and ("歌" in str(m.content) or "专辑" in str(m.content)):
-                            track_name = str(m.content)[:50]
-                            break
-                    tracks.append({"name": track_name, "content": content})
-                    yp.parent.mkdir(parents=True, exist_ok=True)
-                    yp.write_text(
-                        yaml.dump({"tracks": tracks}, allow_unicode=True, default_flow_style=False, sort_keys=False),
-                        encoding="utf-8",
-                    )
-                    vector_memory.index_music_notes()
-                    return ("✅ 已保存到音乐库",) + to_main()
-                except Exception as e:
-                    return (f"❌ {e}",) + to_main()
-
-            music_send.click(
-                fn=simple_chat, inputs=[music_input, music_chatbot, music_agent],
-                outputs=[music_input, music_chatbot, music_agent],
-            ).then(lambda: "", None, music_input)
-
-            music_finish.click(
-                fn=music_finish_fn, inputs=[music_agent, music_chatbot],
-                outputs=[music_preview, music_status, music_save, music_discard, music_agent],
-            )
-            music_save.click(
-                fn=lambda: '<div class="big-loading">💾 正在保存入库...</div>', outputs=[music_status],
-            ).then(
-                fn=music_save_fn, inputs=[music_agent],
-                outputs=[music_status, main_page] + ALL_PAGES,
-            )
-            music_discard.click(
-                fn=lambda: ("🫧 已丢弃",) + to_main(),
-                outputs=[music_status] + [main_page] + ALL_PAGES,
-            ).then(fn=lambda: (None, []), outputs=[music_agent, music_chatbot])
-
         # ═══════════════ 学习镜头 ═══════════════
         with gr.Column(visible=False) as lens_page:
             ALL_PAGES.append(lens_page)
             gr.Markdown("## 🖼️ 学习镜头")
-            lens_file = gr.File(label="选择图片", file_types=["image"], file_count="single")
+            lens_file = gr.File(label="选择图片", file_types=[".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".dng", ".cr2", ".nef", ".arw"], file_count="single")
             lens_desc = gr.Textbox(placeholder="写几句描述或感受...", label="", lines=3)
             lens_preview = gr.Markdown("", visible=False)
             with gr.Row(elem_classes="footer-row"):
@@ -827,49 +579,67 @@ def build_ui():
 
             async def lens_analyze_fn(file, desc_text):
                 if not file:
-                    return "", "请先选择图片", "", gr.Button(interactive=False)
-                import shutil
+                    return gr.Markdown(value="", visible=False), "请先选择图片", "", gr.Button(interactive=False)
+                import os
                 fpath = file if isinstance(file, str) else (file.get("name", "") if isinstance(file, dict) else getattr(file, "name", ""))
-                saved = Path(WORKSPACE) / f"lens_{Path(fpath).name}"
-                shutil.copy2(fpath, str(saved))
-                vr = await vision_tool.execute(image=str(saved))
+                fpath = str(fpath)  # Gradio 传的是 NamedString（str 子类），rawpy 的 Cython 只认纯 str
+                ext = Path(fpath).suffix.lower()
+                vision_path = fpath
+                tmp_path = None
+                # RAW（DNG/CR2/NEF/ARW）先转成 JPEG 再交给视觉模型
+                if ext in {".dng", ".cr2", ".nef", ".arw"}:
+                    tmp_path = raw_to_jpeg(fpath, prefix="_srx_lens")
+                    if not tmp_path:
+                        return gr.Markdown(value="❌ RAW 解析失败：该文件不是标准 RAW，或为 LibRaw 不支持的有损压缩格式（部分手机/无人机导出的 DNG）。建议先转成 JPEG 再上传。", visible=True), "分析失败", "", gr.Button(interactive=False)
+                    vision_path = tmp_path
+                vr = await vision_tool.execute(image=vision_path)
+                if tmp_path and os.path.exists(tmp_path):
+                    try: os.remove(tmp_path)
+                    except Exception: pass
                 if not vr.success:
-                    return "", f"分析失败: {vr.error}", "", gr.Button(interactive=False)
+                    return gr.Markdown(value=f"❌ 分析失败：{vr.error}", visible=True), "分析失败", "", gr.Button(interactive=False)
                 ai_desc = vr.content
                 combined = f"**AI 分析**\n{ai_desc}"
                 if desc_text.strip():
                     combined += f"\n\n**我的感受**\n{desc_text}"
-                return combined, "预览中，确认后保存", combined, gr.Button(interactive=True)
+                return gr.Markdown(value=combined, visible=True), "预览中，确认后保存", combined, gr.Button(interactive=True)
 
             async def lens_save_fn(result_text):
+                # 保存成功后清空表单：file→None、desc→""、预览→隐藏、state→""
+                _clear = (None, "", gr.Markdown(value="", visible=False), "")
                 if not result_text:
-                    return ("没有内容可保存",) + to_main()
+                    return ("没有内容可保存",) + _clear + to_main()
                 try:
                     yp = Path(LENS_DIR) / "index.yaml"
                     data = {}
                     max_num = 0
+                    photos = []
                     if yp.exists():
                         data = yaml.safe_load(yp.read_text(encoding="utf-8")) or {}
-                        for fr in data.get("frames", data.get("photos", [])):
+                        # 兼容旧版 frames 键，统一迁移到 photos（向量库只读 photos）
+                        photos = list(data.get("photos") or data.get("frames", []))
+                        for fr in photos:
                             try:
                                 n = int("".join(c for c in fr.get("file", "") if c.isdigit()))
                                 max_num = max(max_num, n)
                             except Exception:
                                 pass
-                    frames = data.get("frames", data.get("photos", []))
                     max_num += 1
-                    frames.append({"file": f"{max_num:05d}", "desc": result_text})
+                    photos.append({"file": f"{max_num:05d}", "desc": result_text})
                     yp.parent.mkdir(parents=True, exist_ok=True)
                     yp.write_text(
-                        yaml.dump({"frames": frames}, allow_unicode=True, default_flow_style=False, sort_keys=False),
+                        yaml.dump({"photos": photos}, allow_unicode=True, default_flow_style=False, sort_keys=False),
                         encoding="utf-8",
                     )
                     vector_memory.index_photo_library()
-                    return (f"✅ 已入库 (编号 {max_num:05d})",) + to_main()
+                    return (f"✅ 已入库 (编号 {max_num:05d})",) + _clear + to_main()
                 except Exception as e:
-                    return (f"❌ {e}",) + to_main()
+                    return (f"❌ {e}",) + _clear + to_main()
 
             lens_analyze.click(
+                fn=lambda: (gr.Markdown(value="", visible=False), '<div class="big-loading">🔍 分析中...</div>', "", gr.Button(interactive=False)),
+                outputs=[lens_preview, lens_status, lens_result_state, lens_save],
+            ).then(
                 fn=lens_analyze_fn, inputs=[lens_file, lens_desc],
                 outputs=[lens_preview, lens_status, lens_result_state, lens_save],
             )
@@ -877,11 +647,11 @@ def build_ui():
                 fn=lambda: '<div class="big-loading">💾 正在保存入库...</div>', outputs=[lens_status],
             ).then(
                 fn=lens_save_fn, inputs=[lens_result_state],
-                outputs=[lens_status, main_page] + ALL_PAGES,
+                outputs=[lens_status, lens_file, lens_desc, lens_preview, lens_result_state, main_page] + ALL_PAGES,
             )
             lens_discard.click(
-                fn=lambda: ("🫧 已取消",) + to_main(),
-                outputs=[lens_status] + [main_page] + ALL_PAGES,
+                fn=lambda: ("🫧 已取消", None, "", gr.Markdown(value="", visible=False), "") + to_main(),
+                outputs=[lens_status, lens_file, lens_desc, lens_preview, lens_result_state, main_page] + ALL_PAGES,
             )
 
         # ═══════════════ 生成图片 ═══════════════
@@ -999,30 +769,24 @@ def build_ui():
         # ═══════════════ 页面切换 ═══════════════
 
         def _mk_cols():
-            return [gr.Column(visible=False) for _ in range(8)]  # 8 个独立 Column
+            return [gr.Column(visible=False) for _ in range(6)]  # 6 个独立 Column
 
         def to_creative():
             c = _mk_cols(); c[1] = gr.Column(visible=True); return tuple(c) + (make_creative_agent(),)
-        def to_film():
-            c = _mk_cols(); c[2] = gr.Column(visible=True); return tuple(c) + (make_film_agent(),)
-        def to_music():
-            c = _mk_cols(); c[3] = gr.Column(visible=True); return tuple(c) + (make_music_agent(),)
         def to_lens():
-            c = _mk_cols(); c[4] = gr.Column(visible=True); return tuple(c) + (make_lens_agent(),)
+            c = _mk_cols(); c[2] = gr.Column(visible=True); return tuple(c) + (make_lens_agent(),)
         def to_img_gen():
-            c = _mk_cols(); c[5] = gr.Column(visible=True); return tuple(c)
+            c = _mk_cols(); c[3] = gr.Column(visible=True); return tuple(c)
         def to_vid_gen():
-            c = _mk_cols(); c[6] = gr.Column(visible=True); return tuple(c)
+            c = _mk_cols(); c[4] = gr.Column(visible=True); return tuple(c)
         def to_site():
-            c = _mk_cols(); c[7] = gr.Column(visible=True); return tuple(c)
+            c = _mk_cols(); c[5] = gr.Column(visible=True); return tuple(c)
 
-        creative_btn.click(fn=to_creative, outputs=[main_page, creative_page, film_page, music_page, lens_page, img_gen_page, vid_gen_page, site_page, creative_agent])
-        film_btn.click(fn=to_film, outputs=[main_page, creative_page, film_page, music_page, lens_page, img_gen_page, vid_gen_page, site_page, film_agent])
-        music_btn.click(fn=to_music, outputs=[main_page, creative_page, film_page, music_page, lens_page, img_gen_page, vid_gen_page, site_page, music_agent])
-        lens_btn.click(fn=to_lens, outputs=[main_page, creative_page, film_page, music_page, lens_page, img_gen_page, vid_gen_page, site_page, lens_agent])
-        img_gen_btn.click(fn=to_img_gen, outputs=[main_page, creative_page, film_page, music_page, lens_page, img_gen_page, vid_gen_page, site_page])
-        vid_gen_btn.click(fn=to_vid_gen, outputs=[main_page, creative_page, film_page, music_page, lens_page, img_gen_page, vid_gen_page, site_page])
-        site_btn.click(fn=to_site, outputs=[main_page, creative_page, film_page, music_page, lens_page, img_gen_page, vid_gen_page, site_page])
+        creative_btn.click(fn=to_creative, outputs=[main_page, creative_page, lens_page, img_gen_page, vid_gen_page, site_page, creative_agent])
+        lens_btn.click(fn=to_lens, outputs=[main_page, creative_page, lens_page, img_gen_page, vid_gen_page, site_page, lens_agent])
+        img_gen_btn.click(fn=to_img_gen, outputs=[main_page, creative_page, lens_page, img_gen_page, vid_gen_page, site_page])
+        vid_gen_btn.click(fn=to_vid_gen, outputs=[main_page, creative_page, lens_page, img_gen_page, vid_gen_page, site_page])
+        site_btn.click(fn=to_site, outputs=[main_page, creative_page, lens_page, img_gen_page, vid_gen_page, site_page])
 
     return app
 
@@ -1032,8 +796,6 @@ if __name__ == "__main__":
     print("🧠 正在同步向量库...", end=" ", flush=True)
     try:
         vector_memory.index_conversations()
-        vector_memory.index_notes()
-        vector_memory.index_music_notes()
         vector_memory.index_photo_library()
         print("✅ 同步完成")
     except Exception as e:

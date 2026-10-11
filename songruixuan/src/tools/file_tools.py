@@ -218,7 +218,7 @@ class ListDirTool(Tool):
 
     @property
     def description(self) -> str:
-        return "列出指定目录下的文件和子目录。用于浏览素材库、影库、乐库等。"
+        return "列出指定目录下的文件和子目录。用于浏览素材库、图库等。"
 
     @property
     def parameters(self) -> dict:

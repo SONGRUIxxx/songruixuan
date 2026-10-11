@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from src.tool_base import Tool, ToolResult
+from src.tools.raw_utils import raw_to_jpeg
 
 if TYPE_CHECKING:
     from src.tools.vector_memory import VectorMemory
@@ -127,15 +128,10 @@ class PhotoImportTool(Tool):
             raw_exts = {".cr2", ".nef", ".arw", ".dng"}
             tmp_path = None
             if ext in raw_exts and self.vision:
-                try:
-                    import rawpy, tempfile
-                    with rawpy.imread(str(new_path)) as raw:
-                        rgb = raw.postprocess()
-                    from PIL import Image
-                    tmp_path = os.path.join(tempfile.gettempdir(), f"_srx_photo_{max_num:04d}.jpg")
-                    Image.fromarray(rgb).save(tmp_path, "JPEG", quality=85)
+                tmp_path = raw_to_jpeg(str(new_path), prefix="_srx_photo")
+                if tmp_path:
                     vision_path = tmp_path
-                except Exception:
+                else:
                     vision_path = ""  # 转换失败，跳过分析
 
             if vision_path and ext in (vision_ok | raw_exts) and self.vision:
