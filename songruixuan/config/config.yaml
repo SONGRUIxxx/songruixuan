@@ -1,8 +1,0 @@
-# 🌸 SONGRUIXUAN 配置文件（私密，不提交到 git）
-deepseek_key: "sk-5bbe0a9153b143f2bddbb36d5a8f6030"
-volc_ark_key: "ark-5dcc2a52-f4ba-43e6-bdd4-09e27ac12333-2ddfb"
-tos_ak: "AKLTNmExOTQ4NTBjMWQyNDViMDg0Yjk3Y2Q0NzExODE2NTc"
-tos_sk: "WWprM016UXlPVE0xTW1abU5EYzRaVGhqTmpnek5EWmtOekZqWXpZME5qRQ=="
-tos_bucket: "songruixuan"
-tos_endpoint: "tos-cn-beijing.volces.com"
-tos_region: "cn-beijing"
